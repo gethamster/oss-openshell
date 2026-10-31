@@ -29,6 +29,9 @@ use tokio::sync::RwLock;
 use tonic::Status;
 use tracing::{debug, error, info, warn};
 
+#[path = "oidc_federation.rs"]
+mod federation;
+
 /// Path prefixes that bypass OIDC validation (gRPC reflection, health probes).
 ///
 /// These are structural bypasses for gRPC infrastructure that doesn't map to a
@@ -611,6 +614,22 @@ impl JwksCache {
             validate_jwks_origin(allowed, config.dangerously_allow_insecure_http)?;
         }
 
+        if let Some(registry) = &config.federation_registry_url {
+            let url = validate_oidc_url(
+                registry,
+                "OIDC federation registry",
+                config.dangerously_allow_insecure_http,
+            )?;
+            if url.query().is_some() || url.fragment().is_some() {
+                return Err("OIDC federation registry must not include a query or fragment".into());
+            }
+            if !config.scopes_claim.is_empty() {
+                return Err(
+                    "OIDC federation uses workspace grants; scopes_claim must be empty".into(),
+                );
+            }
+        }
+
         // Discover JWKS URI from the OIDC discovery endpoint.
         let discovery_url = url::Url::parse(&format!(
             "{}/.well-known/openid-configuration",
@@ -921,11 +940,17 @@ fn decode_failure_reason(kind: &jsonwebtoken::errors::ErrorKind) -> AuthFailureR
 /// authenticator).
 pub struct OidcAuthenticator {
     cache: Arc<JwksCache>,
+    federation: Option<federation::Federation>,
 }
 
 impl OidcAuthenticator {
     pub fn new(cache: Arc<JwksCache>) -> Self {
-        Self { cache }
+        let federation = cache
+            .config
+            .federation_registry_url
+            .as_ref()
+            .map(|_| federation::Federation::new(cache.clone()));
+        Self { cache, federation }
     }
 }
 
@@ -940,7 +965,11 @@ impl Authenticator for OidcAuthenticator {
             return Ok(Authentication::NotApplicable);
         };
 
-        let identity = self.cache.validate_token(token).await?;
+        let identity = if let Some(federation) = &self.federation {
+            federation.authenticate(token).await?
+        } else {
+            self.cache.validate_token(token).await?
+        };
         Ok(Authentication::Accepted(Principal::User(UserPrincipal {
             identity,
         })))
@@ -953,6 +982,7 @@ mod tests {
 
     fn transport_test_config(issuer: impl Into<String>) -> OidcConfig {
         OidcConfig {
+            federation_registry_url: None,
             issuer: issuer.into(),
             dangerously_allow_insecure_http: false,
             jwks_allowed_origins: Vec::new(),
@@ -1469,6 +1499,7 @@ mod tests {
             .await;
 
         JwksCache::new(&OidcConfig {
+            federation_registry_url: None,
             issuer,
             dangerously_allow_insecure_http: true,
             jwks_allowed_origins: Vec::new(),
@@ -1869,6 +1900,7 @@ mod tests {
 
         fn test_oidc_config(issuer: &str) -> OidcConfig {
             OidcConfig {
+                federation_registry_url: None,
                 issuer: issuer.to_string(),
                 dangerously_allow_insecure_http: true,
                 jwks_allowed_origins: Vec::new(),

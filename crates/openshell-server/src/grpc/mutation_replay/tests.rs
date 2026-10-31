@@ -951,6 +951,7 @@ async fn unrelated_oidc_configuration_does_not_reset_mtls_admission_identity() {
     };
     state.store.put_message(&template).await.unwrap();
     Arc::get_mut(&mut state).unwrap().config.oidc = Some(openshell_core::OidcConfig {
+        federation_registry_url: None,
         issuer: "https://new.example.com".into(),
         dangerously_allow_insecure_http: false,
         jwks_allowed_origins: Vec::new(),

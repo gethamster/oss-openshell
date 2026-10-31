@@ -419,6 +419,48 @@ sa_token_ttl_secs      = 3600
 namespace = "openshell"
 ```
 
+### Federated OIDC issuers
+
+A shared gateway can trust independently administered issuers through an
+operator-controlled registry. Add this field to `[openshell.gateway.oidc]`:
+
+```toml
+federation_registry_url = "https://access.example.com/v1/federation/issuers"
+scopes_claim = ""
+```
+
+The registry serves JSON with this shape:
+
+```json
+{
+  "version": 1,
+  "issuers": [{
+    "issuer": "https://tenant.example.com",
+    "audience": "tenant-api",
+    "subjects": ["registered-runtime", "registered-owner"]
+  }]
+}
+```
+
+Registry connections verify TLS and reject redirects. Each issuer must appear
+once with an explicit audience and admitted subjects. Unknown issuers never
+trigger discovery. A registered issuer's JWKS must stay on its own origin.
+Registry responses are limited to 1 MiB, 1,000 issuers and 10,000 subjects.
+
+Federated tokens require Ed25519 signatures, `iss`, `sub`, `aud`, `iat`, `exp`
+and `jti`, and a lifetime of at most five minutes. Their gateway subject is the
+compact JSON representation of the exact issuer/subject pair, for example
+`["https://tenant.example.com","registered-runtime"]`. Use this whole string
+when adding workspace members. Equal subjects from different issuers therefore
+remain distinct.
+
+Federation grants only the configured `user_role`; token-supplied admin roles
+and scopes cannot expand it. Grant resource access through workspace membership.
+Operator certificate authentication remains separate. Registry removals apply
+on the next refresh, within 30 seconds. After that window, an unavailable or
+invalid registry rejects authentication instead of retaining stale authority.
+
+
 Set `[openshell.gateway.mtls_auth] enabled = true` to map a verified client certificate to a CLI user identity. This gateway policy is independent of the compute driver and defaults on when a client CA is configured without OIDC. The listener allows bearer-only clients and validates any client certificate presented against the configured CA. Supervisors use `guest_tls_ca` to authenticate the gateway and sandbox bearer tokens to authenticate their RPCs.
 
 Set `[openshell.gateway.mtls_auth] operator_enabled = true`,

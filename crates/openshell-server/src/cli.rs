@@ -663,6 +663,10 @@ fn prepare_server_config_with_drivers(
 
     if let Some(issuer) = args.oidc_issuer.clone() {
         config = config.with_oidc(openshell_core::OidcConfig {
+            federation_registry_url: file
+                .as_ref()
+                .and_then(|f| f.openshell.gateway.oidc.as_ref())
+                .and_then(|oidc| oidc.federation_registry_url.clone()),
             issuer,
             dangerously_allow_insecure_http: args.oidc_dangerously_allow_insecure_http,
             jwks_allowed_origins: args.oidc_jwks_allowed_origins.clone(),
