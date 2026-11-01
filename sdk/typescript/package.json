@@ -2,7 +2,7 @@
   "name": "@nvidia/openshell-sdk",
   "version": "0.0.0",
   "description": "Official TypeScript SDK for the OpenShell gateway.",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "Apache-2.0",
   "type": "module",
   "homepage": "https://github.com/NVIDIA/OpenShell",
   "repository": {

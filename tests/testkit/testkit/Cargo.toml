@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# Hamster modifications: Apache 2.0 with Commons Clause; see the repository LICENSE.
+# Hamster modifications are licensed under Apache-2.0.
 
 [package]
 name = "openshell-testkit"
@@ -8,6 +8,7 @@ description = "Shared support for OpenShell end-to-end test suites"
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.94"
+license = "Apache-2.0"
 license-file = "../../../LICENSE"
 repository = "https://github.com/NVIDIA/OpenShell"
 publish = false

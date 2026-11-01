@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# Hamster modifications: Apache 2.0 with Commons Clause; see the repository LICENSE.
+# Hamster modifications are licensed under Apache-2.0.
 
 [build-system]
 requires = ["setuptools>=84.1.0", "setuptools-scm[simple]>=8"]
@@ -10,7 +10,7 @@ build-backend = "setuptools.build_meta"
 name = "openshell"
 dynamic = ["version"]
 description = "OpenShell is the safe, private runtime for autonomous AI agents. "
-license = "LicenseRef-Apache-2.0-Commons-Clause"
+license = "Apache-2.0"
 license-files = ["LICENSE", "LICENSE-UPSTREAM"]
 readme = "README.md"
 authors = [{ name = "NVIDIA Inc." }]
