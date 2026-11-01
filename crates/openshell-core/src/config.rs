@@ -481,6 +481,12 @@ pub struct OidcConfig {
     /// OIDC issuer URL (e.g., `https://idp.example.com/realms/openshell`).
     pub issuer: String,
 
+    /// Trusted HTTPS registry of federated issuers and admitted subjects.
+    /// When set, user tokens must match this registry; their workspace identity
+    /// is the JSON encoding of the exact `[issuer, subject]` pair.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub federation_registry_url: Option<String>,
+
     /// Permit cleartext OIDC metadata and JWKS requests to numeric loopback
     /// addresses. This is a development-only escape hatch and never permits
     /// cleartext requests to hostnames or non-loopback addresses.
