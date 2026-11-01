@@ -8,7 +8,7 @@
 
 <!-- markdownlint-enable MD033 MD041 -->
 
-[![License](https://img.shields.io/badge/License-Apache_2.0_with_Commons_Clause-blue)](LICENSE)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue)](LICENSE)
 [![PyPI](https://img.shields.io/badge/PyPI-openshell-orange?logo=pypi)](https://pypi.org/project/openshell/)
 [![Security Policy](https://img.shields.io/badge/Security-Report%20a%20Vulnerability-red)](SECURITY.md)
 [![Documentation](https://img.shields.io/badge/docs-latest-brightgreen)](https://docs.nvidia.com/openshell/latest/index.html)
@@ -92,11 +92,7 @@ This software automatically retrieves, accesses or interacts with external mater
 
 ## License
 
-Hamster-authored work and modifications in this fork are source-available under
-[Apache License 2.0 with the Commons Clause License Condition v1.0](LICENSE).
-The Commons Clause restricts selling the covered software as defined in the
-license, so these terms are not an OSI-approved open-source license.
-
-NVIDIA's upstream code remains under its original [Apache License 2.0](LICENSE-UPSTREAM).
+OpenShell, including Hamster-authored additions and modifications, is licensed
+under the [Apache License 2.0](LICENSE). The original NVIDIA license and
+copyright notice are preserved in [LICENSE-UPSTREAM](LICENSE-UPSTREAM).
 Other third-party materials retain their respective licenses and notices.
-Previously granted licenses for earlier versions remain in effect.

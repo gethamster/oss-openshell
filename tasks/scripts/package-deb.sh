@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# Hamster modifications: Apache 2.0 with Commons Clause; see the repository LICENSE.
+# Hamster modifications are licensed under Apache-2.0.
 #
 # Build the openshell Debian package by staging pre-built binaries alongside
 # the authoring tree under deploy/deb/, then invoking dpkg-deb --build.

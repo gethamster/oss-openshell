@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# Hamster modifications: Apache 2.0 with Commons Clause; see the repository LICENSE.
+# Hamster modifications are licensed under Apache-2.0.
 
 name: openshell
 title: OpenShell
@@ -93,9 +93,7 @@ confinement: strict
 # snap-declaration overrides from the store, such as when installing a locally-
 # built snap, but that is not required for installations from the snap store.
 assumes: [snapd2.76]
-# SPDX 2.1 has no identifier for Apache 2.0 with Commons Clause.
-# Both the combined terms and upstream Apache license are included below.
-license: Proprietary
+license: Apache-2.0
 website: https://docs.nvidia.com/openshell/latest/index.html
 source-code: https://github.com/NVIDIA/OpenShell
 issues: https://github.com/NVIDIA/OpenShell/issues
