@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Hamster modifications: Apache 2.0 with Commons Clause; see the repository LICENSE.
 
 # Standalone crate — the empty [workspace] table prevents Cargo from
 # treating this as part of the root workspace, avoiding Dockerfile
@@ -12,7 +13,7 @@ description = "End-to-end tests for the OpenShell CLI"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.94"
-license = "Apache-2.0"
+license-file = "../../LICENSE"
 publish = false
 
 [features]
