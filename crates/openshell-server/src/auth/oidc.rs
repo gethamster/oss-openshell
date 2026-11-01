@@ -583,6 +583,7 @@ impl JwksCache {
     pub async fn new(config: &OidcConfig) -> Result<Self, String> {
         openshell_crypto::tls::ensure_default_provider();
         let http = Client::builder()
+            .user_agent(concat!("openshell-oidc/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none())
             .build()
@@ -1473,12 +1474,16 @@ mod tests {
     /// Serve an OIDC discovery document and a JWKS carrying the test key, then
     /// build a cache against them the same way production does.
     async fn cache_with_mock_issuer(server: &wiremock::MockServer) -> JwksCache {
-        use wiremock::matchers::{method, path};
+        use wiremock::matchers::{header, method, path};
         use wiremock::{Mock, ResponseTemplate};
 
         let issuer = server.uri();
         Mock::given(method("GET"))
             .and(path("/.well-known/openid-configuration"))
+            .and(header(
+                "user-agent",
+                concat!("openshell-oidc/", env!("CARGO_PKG_VERSION")),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "issuer": issuer,
                 "jwks_uri": format!("{issuer}/jwks"),
