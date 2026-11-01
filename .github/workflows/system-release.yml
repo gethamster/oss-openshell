@@ -83,8 +83,8 @@ jobs:
           mkdir -p dist
           target/$CLI_TRIPLE/release/openshell --version | grep -F "$VERSION"
           target/$GATEWAY_TRIPLE/release/openshell-gateway --version | grep -F "$VERSION"
-          tar -czf "dist/openshell-$CLI_TRIPLE.tar.gz" -C "target/$CLI_TRIPLE/release" openshell
-          tar -czf "dist/openshell-gateway-$GATEWAY_TRIPLE.tar.gz" -C "target/$GATEWAY_TRIPLE/release" openshell-gateway
+          tar -czf "dist/openshell-$CLI_TRIPLE.tar.gz" -C "target/$CLI_TRIPLE/release" openshell -C "$GITHUB_WORKSPACE" LICENSE LICENSE-UPSTREAM
+          tar -czf "dist/openshell-gateway-$GATEWAY_TRIPLE.tar.gz" -C "target/$GATEWAY_TRIPLE/release" openshell-gateway -C "$GITHUB_WORKSPACE" LICENSE LICENSE-UPSTREAM
           git rev-parse HEAD > "dist/source-$PLATFORM.txt"
           cp federation-tests.log "dist/federation-tests-$PLATFORM.log"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
