@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Hamster modifications: Apache 2.0 with Commons Clause; see the repository LICENSE.
 
 name: Snap Package
 
@@ -108,7 +109,7 @@ jobs:
           cp prebuilt/sandbox/openshell-sandbox snap/prebuilt/openshell-sandbox
 
           cp tasks/scripts/snap-gateway-wrapper.sh snap/prebuilt/openshell-gateway-wrapper
-          cp LICENSE snap/prebuilt/
+          cp LICENSE LICENSE-UPSTREAM snap/prebuilt/
           cp README.md snap/prebuilt/
 
           mkdir -p snap/prebuilt/meta/gui

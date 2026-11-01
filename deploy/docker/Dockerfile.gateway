@@ -2,6 +2,7 @@
 
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Hamster modifications: Apache 2.0 with Commons Clause; see the repository LICENSE.
 
 # The GNU-linked gateway binary is staged at:
 #   deploy/docker/.build/prebuilt-binaries/<arch>/openshell-gateway
@@ -10,6 +11,7 @@
 
 ARG GATEWAY_BASE_IMAGE=gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2
 FROM ${GATEWAY_BASE_IMAGE} AS gateway
+COPY LICENSE LICENSE-UPSTREAM /usr/share/licenses/openshell/
 
 ARG TARGETARCH
 

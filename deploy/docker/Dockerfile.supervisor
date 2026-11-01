@@ -2,6 +2,7 @@
 
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Hamster modifications: Apache 2.0 with Commons Clause; see the repository LICENSE.
 
 # The dynamically linked GNU supervisor binary is staged under
 # deploy/docker/.build/prebuilt-binaries/<arch>/.
@@ -10,6 +11,7 @@
 # The default variant preserves UID 0 and /; compute drivers set the runtime UID.
 ARG SUPERVISOR_BASE_IMAGE=gcr.io/distroless/base-nossl-debian13@sha256:af5cb8dd589b8520b8c06bebb9efb73d7e16406cab58e85c51761fff49d370a0
 FROM ${SUPERVISOR_BASE_IMAGE} AS supervisor
+COPY LICENSE LICENSE-UPSTREAM /usr/share/licenses/openshell/
 
 ARG TARGETARCH
 

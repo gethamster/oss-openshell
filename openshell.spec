@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Hamster modifications: Apache 2.0 with Commons Clause; see the repository LICENSE.
 
 %global crate openshell
 %global openshell_version 0.0.37
@@ -17,14 +18,15 @@ Version:        %{openshell_version}
 Release:        1.20260518180028805757.podman.toml.gateway.listener.11.g8c0cb7c8%{?dist}
 Summary:        Safe, sandboxed runtimes for autonomous AI agents
 
-# OpenShell's own code is Apache-2.0. The binaries statically link third-party
+# Hamster changes use Apache 2.0 with Commons Clause; upstream remains Apache-2.0.
+# The binaries statically link third-party
 # crates; this is the minimal SPDX expression covering every crate linked into
 # openshell, openshell-gateway and openshell-prover (computed from `cargo tree`
 # license metadata, treating "X OR MIT" as satisfied by MIT or Apache-2.0).
 # The docs, man page sources, config templates and Python SDK sources carry
 # Apache-2.0 SPDX headers or fall under the repository LICENSE. The unit file is
 # generated from this spec. Re-check when Cargo.lock changes.
-License:        Apache-2.0 AND BSD-3-Clause AND CC0-1.0 AND CDLA-Permissive-2.0 AND ISC AND MIT AND Unicode-3.0 AND Zlib
+License:        LicenseRef-Apache-2.0-Commons-Clause AND Apache-2.0 AND BSD-3-Clause AND CC0-1.0 AND CDLA-Permissive-2.0 AND ISC AND MIT AND Unicode-3.0 AND Zlib
 URL:            https://github.com/NVIDIA/OpenShell
 Source0: openshell-%{openshell_version}.tar.gz
 Source1: openshell-%{openshell_version}-vendor.tar.xz
@@ -77,7 +79,7 @@ within an operator-supplied maximum without connecting to a gateway.
 %package -n python3-%{name}
 Summary:        OpenShell Python SDK for agent execution and management
 # Pure Python; links none of the crates covered by the main License tag.
-License:        Apache-2.0
+License:        LicenseRef-Apache-2.0-Commons-Clause AND Apache-2.0
 # Use Recommends instead of Requires because Fedora 43+ ships older
 # versions of grpcio (1.48) and protobuf (3.19) than the SDK needs.
 # Users on distros with older packages can install these via pip/uv.
@@ -219,7 +221,7 @@ Metadata-Version: 2.1
 Name: %{name}
 Version: %{openshell_python_version}
 Summary: OpenShell Python SDK for agent execution and management
-License: Apache-2.0
+License: Apache 2.0 with Commons Clause (Hamster changes); Apache-2.0 (upstream)
 Requires-Python: >=3.12
 Requires-Dist: cloudpickle>=3.0
 Requires-Dist: googleapis-common-protos>=1.63
@@ -288,6 +290,7 @@ grep -q 'gateway.toml.default.v1' %{buildroot}%{_userunitdir}/%{name}-gateway.se
 
 %files
 %license LICENSE
+%license LICENSE-UPSTREAM
 %license LICENSE.dependencies
 %license cargo-vendor.txt
 %doc README.md
@@ -296,12 +299,14 @@ grep -q 'gateway.toml.default.v1' %{buildroot}%{_userunitdir}/%{name}-gateway.se
 
 %files prover
 %license LICENSE
+%license LICENSE-UPSTREAM
 %license LICENSE.dependencies
 %license cargo-vendor.txt
 %{_bindir}/%{name}-prover
 
 %files gateway
 %license LICENSE
+%license LICENSE-UPSTREAM
 %license LICENSE.dependencies
 %license cargo-vendor.txt
 %doc %{_docdir}/%{name}-gateway/QUICKSTART.md
@@ -316,6 +321,7 @@ grep -q 'gateway.toml.default.v1' %{buildroot}%{_userunitdir}/%{name}-gateway.se
 
 %files -n python3-%{name}
 %license LICENSE
+%license LICENSE-UPSTREAM
 %{python3_sitelib}/%{name}/
 %{python3_sitelib}/%{name}-%{openshell_python_version}.dist-info/
 

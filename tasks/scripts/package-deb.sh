@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+# Hamster modifications: Apache 2.0 with Commons Clause; see the repository LICENSE.
 #
 # Build the openshell Debian package by staging pre-built binaries alongside
 # the authoring tree under deploy/deb/, then invoking dpkg-deb --build.
@@ -144,14 +145,9 @@ install -m 0755 "$src_dir/postrm.sh"   "$pkgroot/DEBIAN/postrm"
 doc_dir="$pkgroot/usr/share/doc/openshell"
 mkdir -p "$doc_dir"
 
-if [ -f "${repo_root}/LICENSE" ]; then
-	install -m 0644 "${repo_root}/LICENSE" "$doc_dir/copyright"
-else
-	cat >"$doc_dir/copyright" <<'EOF'
-OpenShell is distributed under the Apache-2.0 license.
-EOF
-	chmod 0644 "$doc_dir/copyright"
-fi
+# Fail if either license is missing instead of emitting an Apache-only fallback.
+install -m 0644 "${repo_root}/LICENSE" "$doc_dir/copyright"
+install -m 0644 "${repo_root}/LICENSE-UPSTREAM" "$doc_dir/LICENSE-UPSTREAM"
 
 # Real RFC2822 date so lintian doesn't complain about epoch-zero changelogs.
 gzip -n -9 -c >"$doc_dir/changelog.gz" <<EOF
