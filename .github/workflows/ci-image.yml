@@ -17,12 +17,14 @@ env:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   build-ci-image:
     name: Build (${{ matrix.arch }})
     if: github.repository == 'gethamster/oss-openshell' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -102,6 +104,9 @@ jobs:
   merge-ci-image:
     name: Merge manifest
     if: github.repository == 'gethamster/oss-openshell' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
     needs: build-ci-image
     runs-on: oss-ubuntu24-x64
     timeout-minutes: 10
