@@ -70,6 +70,7 @@ type TokenSlot = Arc<RwLock<Option<AsciiMetadataValue>>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TokenSource {
+    External,
     Env,
     File,
     K8sServiceAccount,
@@ -158,6 +159,24 @@ impl GatewayCredentials {
         Ok(Self::new(validate_gateway_bearer(token)?, TokenSource::Env))
     }
 
+    /// A scoped credential renewed by an external lifecycle owner.
+    /// Clients share the slot but never start a competing renewal loop.
+    pub fn externally_managed(token: &str) -> Result<Self> {
+        Ok(Self::new(
+            validate_gateway_bearer(token)?,
+            TokenSource::External,
+        ))
+    }
+
+    /// Replace an externally renewed token without reviving a revoked slot.
+    pub fn update_external_token(&self, token: &str) -> Result<()> {
+        if self.inner.source != TokenSource::External || self.is_revoked() {
+            miette::bail!("gateway credential is not externally managed or was revoked");
+        }
+        self.install_gateway_bearer(validate_gateway_bearer(token)?);
+        Ok(())
+    }
+
     /// Resolve a token for diagnostic tools from the environment, exchanging a
     /// projected `ServiceAccount` token when no gateway JWT is present.
     pub async fn from_environment(endpoint: &str) -> Result<Self> {
@@ -202,6 +221,9 @@ impl GatewayCredentials {
     /// Start the renewal task once for these credentials, on the caller's
     /// runtime, so a hosted sandbox instance's renewal stops with that instance.
     fn start_renewal(&self, channel: &AuthedChannel, plain_channel: &Channel, endpoint: &str) {
+        if self.inner.source == TokenSource::External {
+            return;
+        }
         let mut renewal = self
             .inner
             .renewal
@@ -253,6 +275,7 @@ impl GatewayCredentials {
 pub struct GatewayEndpoint {
     url: Arc<str>,
     credentials: GatewayCredentials,
+    ca_certificate: Option<Arc<[u8]>>,
 }
 
 impl GatewayEndpoint {
@@ -260,7 +283,16 @@ impl GatewayEndpoint {
         Self {
             url: url.into(),
             credentials,
+            ca_certificate: None,
         }
+    }
+
+    /// Pin this instance's gateway CA without consulting process-wide trust.
+    /// Destination certificates and user-supplied CAs must never be passed here.
+    #[must_use]
+    pub fn with_ca_certificate(mut self, certificate: Vec<u8>) -> Self {
+        self.ca_certificate = Some(certificate.into());
+        self
     }
 
     #[must_use]
@@ -276,7 +308,11 @@ impl GatewayEndpoint {
     /// Reach another gateway address with the same sandbox instance credentials.
     #[must_use]
     pub fn with_url(&self, url: impl Into<Arc<str>>) -> Self {
-        Self::new(url, self.credentials.clone())
+        Self {
+            url: url.into(),
+            credentials: self.credentials.clone(),
+            ca_certificate: self.ca_certificate.clone(),
+        }
     }
 }
 
@@ -595,7 +631,24 @@ async fn connect_channel(gateway: &GatewayEndpoint) -> Result<AuthedChannel> {
             "sandbox instance gateway credentials were revoked"
         ));
     }
-    let channel = build_plain_channel(gateway.url()).await?;
+    let channel = if let Some(ca) = &gateway.ca_certificate {
+        if !gateway.url().starts_with("https://") || ca.is_empty() {
+            miette::bail!("pinned gateway CA requires HTTPS and a nonempty certificate");
+        }
+        let endpoint = Endpoint::from_shared(gateway.url().to_owned())
+            .into_diagnostic()?
+            .connect_timeout(Duration::from_secs(10))
+            .http2_keep_alive_interval(Duration::from_secs(10))
+            .keep_alive_while_idle(true)
+            .keep_alive_timeout(Duration::from_secs(20))
+            .http2_adaptive_window(true);
+        configure_gateway_tls(endpoint, ca.to_vec(), None)?
+            .connect()
+            .await
+            .into_diagnostic()?
+    } else {
+        build_plain_channel(gateway.url()).await?
+    };
     let intercepted = InterceptedService::new(
         channel.clone(),
         AuthInterceptor::new(gateway.credentials.inner.bearer.clone()),
@@ -1489,6 +1542,13 @@ fn provider_environment_result(
         non_secret_environment_keys: inner.non_secret_environment_keys,
         stable_placeholder_environment_keys: inner.stable_placeholder_environment_keys,
     })
+}
+
+impl TryFrom<GetSandboxProviderEnvironmentResponse> for ProviderEnvironmentResult {
+    type Error = miette::Report;
+    fn try_from(response: GetSandboxProviderEnvironmentResponse) -> Result<Self> {
+        provider_environment_result(response, false)
+    }
 }
 
 #[cfg(test)]
@@ -2441,5 +2501,34 @@ impl CachedOpenShellClient {
             .into_diagnostic()?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod external_credential_tests {
+    use super::*;
+    #[test]
+    fn externally_managed_credentials_update_one_slot_and_never_revive_after_revoke() {
+        let credentials = GatewayCredentials::externally_managed("fixture-one").expect("token");
+        let shared = credentials.clone();
+        shared
+            .update_external_token("fixture-two")
+            .expect("external renewal");
+        assert_eq!(credentials.inner.source, TokenSource::External);
+        assert!(
+            credentials
+                .inner
+                .bearer
+                .read()
+                .expect("slot")
+                .as_ref()
+                .expect("bearer")
+                .to_str()
+                .expect("ASCII")
+                .ends_with("fixture-two")
+        );
+        credentials.revoke();
+        assert!(shared.update_external_token("fixture-three").is_err());
+        assert!(shared.inner.bearer.read().expect("slot").is_none());
     }
 }

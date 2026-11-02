@@ -5300,6 +5300,7 @@ dependencies = [
  "openshell-supervisor-middleware",
  "openshell-supervisor-middleware-builtins",
  "opentelemetry_sdk",
+ "prost",
  "prost-types",
  "rcgen",
  "regorus",

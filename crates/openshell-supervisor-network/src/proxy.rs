@@ -279,6 +279,20 @@ pub struct ProxyHandle {
     http_addr: Option<SocketAddr>,
     join: JoinHandle<()>,
     exited_rx: Option<tokio::sync::oneshot::Receiver<()>>,
+    active: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+struct ActiveConnection(Arc<std::sync::atomic::AtomicUsize>);
+impl ActiveConnection {
+    fn new(active: Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        active.fetch_add(1, Ordering::AcqRel);
+        Self(active)
+    }
+}
+impl Drop for ActiveConnection {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl ProxyHandle {
@@ -408,6 +422,8 @@ impl ProxyHandle {
         }
 
         let (exited_tx, exited_rx) = tokio::sync::oneshot::channel::<()>();
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let accept_active = active.clone();
         let join = tokio::spawn(async move {
             // Hold the sender for the lifetime of this task — when the task
             // exits (panic, abort, or loop break), the sender drops and the
@@ -548,9 +564,15 @@ impl ProxyHandle {
                         let atx = activity_tx.clone();
                         let endpoint_observations = endpoint_observation_tx.clone();
                         let required_authorization = required_proxy_authorization.clone();
+                        let active = ActiveConnection::new(accept_active.clone());
+                        let connection_generation = opa.generation_guard(opa.current_generation());
                         tokio::spawn(async move {
+                            let _active = active;
+                            let Ok(connection_generation) = connection_generation else {
+                                return;
+                            };
                             #[allow(clippy::large_futures)]
-                            if let Err(err) = handle_mediated_connection(
+                            let operation = handle_mediated_connection(
                                 tokio::io::BufReader::new(stream),
                                 supplied_identity,
                                 socket_addrs,
@@ -571,9 +593,12 @@ impl ProxyHandle {
                                 atx,
                                 endpoint_observations,
                                 required_authorization,
-                            )
-                            .await
-                            {
+                            );
+                            let result = tokio::select! {
+                                result = operation => result,
+                                () = connection_generation.wait_until_stale() => return,
+                            };
+                            if let Err(err) = result {
                                 ocsf_emit!(build_proxy_connection_error_event(
                                     peer_addr,
                                     transparent_destination_addr,
@@ -610,12 +635,17 @@ impl ProxyHandle {
             http_addr: (!source_backed).then_some(local_addr),
             join,
             exited_rx: Some(exited_rx),
+            active,
         })
     }
 
     #[allow(dead_code)]
     pub const fn http_addr(&self) -> Option<SocketAddr> {
         self.http_addr
+    }
+
+    pub fn active_connections(&self) -> usize {
+        self.active.load(Ordering::Acquire)
     }
 
     pub fn take_exit_receiver(&mut self) -> Option<tokio::sync::oneshot::Receiver<()>> {
@@ -2929,6 +2959,8 @@ async fn handle_mediated_connection(
         .as_ref()
         .expect("destination plan hydrated");
 
+    // The external VM boundary may reserve names independently of address policy.
+    opa_engine.check_destination_host(&raw_host)?;
     // Defense-in-depth: resolve DNS and reject connections to internal IPs.
     let connector = if let Some(connector) = prevalidated_connector {
         connector
@@ -3071,6 +3103,7 @@ async fn handle_mediated_connection(
         return Ok(());
     }
 
+    opa_engine.check_destination_addresses(connector.addrs())?;
     let dial_span = egress::dial_span(&connect_span);
     let upstream_result = tokio::select! {
         result = dial_upstream(&upstream_proxy, &host_lc, &raw_host_lc, port, connector.addrs())
@@ -6304,6 +6337,7 @@ async fn handle_forward_proxy(
         .as_ref()
         .expect("destination plan hydrated");
 
+    opa_engine.check_destination_host(&raw_host)?;
     let connector = match validate_destination(DestinationRequest {
         host: &raw_host,
         port,
@@ -6714,6 +6748,7 @@ async fn handle_forward_proxy(
     // only after every local authorization and transformation step so a
     // rejected WebSocket preflight cannot contact the destination.
     let dial_span = egress::dial_span(&connect_span);
+    opa_engine.check_destination_addresses(connector.addrs())?;
     let dial_result = connector.connect().instrument(dial_span.clone()).await;
     let mut upstream = match dial_result {
         Ok(s) => s,
@@ -15772,6 +15807,7 @@ network_policies:
         let join = tokio::spawn(std::future::pending::<()>());
         let mut handle = ProxyHandle {
             http_addr: None,
+            active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             join,
             exited_rx: Some(rx),
         };
@@ -15789,6 +15825,7 @@ network_policies:
         let join = tokio::spawn(std::future::pending::<()>());
         let mut handle = ProxyHandle {
             http_addr: None,
+            active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             join,
             exited_rx: Some(rx),
         };
@@ -15805,6 +15842,7 @@ network_policies:
         });
         let mut handle = ProxyHandle {
             http_addr: None,
+            active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             join,
             exited_rx: Some(exited_rx),
         };

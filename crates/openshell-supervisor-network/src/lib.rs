@@ -20,6 +20,7 @@ pub mod opa;
 pub(crate) mod policy_dns;
 pub mod policy_local;
 pub mod procfs;
+pub mod provider_proxy;
 pub mod proxy;
 pub mod run;
 pub mod sigv4;
