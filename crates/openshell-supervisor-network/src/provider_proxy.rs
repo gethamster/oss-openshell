@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// SPDX-License-Identifier: Apache-2.0
 //! Provider-aware mediation for one externally fenced VM.
 //!
 //! The caller owns the VM/Pod identity, source isolation and infrastructure
