@@ -256,16 +256,15 @@ def discover_files(root: Path) -> list[Path]:
 SPDX_MARKER = "SPDX-License-Identifier"
 SPDX_COPYRIGHT_RE = re.compile(
     r"SPDX-FileCopyrightText: Copyright \(c\) \d{4}(?:-\d{4})? "
-    r"NVIDIA CORPORATION & AFFILIATES\. All rights reserved\."
+    r"(?:NVIDIA CORPORATION & AFFILIATES\. All rights reserved\.|"
+    r"Hamster(?:\. All rights reserved\.)?)(?:\s*\*/)?\s*$"
 )
 
 
 def has_header(lines: list[str]) -> bool:
-    """Check if the complete NVIDIA SPDX header is in the first 10 lines."""
+    """Check for an Apache-2.0 header from an explicitly recognized owner."""
     header_lines = lines[:10]
-    has_license = any(
-        f"{SPDX_MARKER}: {LICENSE_ID}" in line for line in header_lines
-    )
+    has_license = any(f"{SPDX_MARKER}: {LICENSE_ID}" in line for line in header_lines)
     has_copyright = any(SPDX_COPYRIGHT_RE.search(line) for line in header_lines)
     return has_license and has_copyright
 
@@ -327,9 +326,7 @@ def process_file(path: Path, root: Path, *, check: bool, verbose: bool) -> bool:
     if rel.as_posix() in SIDECAR_LICENSE_FILES:
         sidecar = path.with_name(f"{path.name}.license")
         lines = (
-            sidecar.read_text(encoding="utf-8").splitlines()
-            if sidecar.exists()
-            else []
+            sidecar.read_text(encoding="utf-8").splitlines() if sidecar.exists() else []
         )
         if has_header(lines):
             if verbose:
