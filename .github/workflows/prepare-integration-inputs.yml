@@ -42,7 +42,7 @@ permissions:
 jobs:
   prepare:
     name: Prepare tmachine inputs
-    runs-on: ubuntu-24.04
+    runs-on: oss-ubuntu24-native-x64
     timeout-minutes: 30
     outputs:
       source_sha: ${{ steps.artifact-run.outputs.source_sha }}
@@ -54,9 +54,23 @@ jobs:
           ARTIFACT_RUN_ID: ${{ inputs['artifact-run-id'] || github.run_id }}
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ inputs['source-sha'] }}
+          EVENT_SHA: ${{ github.sha }}
+        shell: bash
         run: |
+          set -euo pipefail
           if [ -z "${SOURCE_SHA}" ]; then
             SOURCE_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ARTIFACT_RUN_ID}" --jq .head_sha)
+          fi
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::Candidate source must be a complete commit SHA.'
+            exit 1
+          fi
+          if [[ "$SOURCE_SHA" != "$EVENT_SHA" ]]; then
+            status=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$SOURCE_SHA" --jq .status)
+            case "$status" in
+              behind|identical) ;;
+              *) echo '::error::Candidate source must match this workflow revision or belong to trusted main history.'; exit 1 ;;
+            esac
           fi
           echo "source_sha=${SOURCE_SHA}" >> "$GITHUB_OUTPUT"
 

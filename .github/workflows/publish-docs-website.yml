@@ -33,7 +33,7 @@ defaults:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     timeout-minutes: 15
     steps:
       - name: Checkout docs website branch

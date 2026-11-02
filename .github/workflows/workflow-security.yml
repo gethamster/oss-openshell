@@ -4,15 +4,7 @@
 name: Workflow Security Reports
 
 on:
-  pull_request:
-  merge_group:
-    types: [checks_requested]
-  push:
-    branches: [main]
-  schedule:
-    - cron: "17 6 * * 1"
   workflow_dispatch:
-  workflow_call:
     inputs:
       candidate_ref:
         description: Optional pre-release tag to scan instead of the triggering revision
@@ -22,9 +14,6 @@ on:
         description: Fail on Zizmor HIGH findings; Actionlint remains informational
         default: false
         type: boolean
-    secrets:
-      CACHIX_AUTH_TOKEN:
-        required: false
 
 permissions:
   contents: read
@@ -40,7 +29,7 @@ concurrency:
 jobs:
   actionlint:
     name: Actionlint (informational)
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     permissions:
       contents: read
       security-events: write
@@ -128,7 +117,7 @@ jobs:
 
   zizmor:
     name: ${{ inputs.fail-on-findings && 'Zizmor High report' || 'Zizmor High report (informational)' }}
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     permissions:
       contents: read
       security-events: write

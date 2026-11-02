@@ -67,7 +67,7 @@ defaults:
 jobs:
   assemble:
     name: Assemble Release Assets
-    runs-on: linux-amd64-cpu8
+    runs-on: oss-ubuntu24-x64
     timeout-minutes: 10
     permissions:
       contents: write
@@ -229,7 +229,7 @@ jobs:
   tag-ghcr-release:
     name: Publish GHCR Images
     needs: assemble
-    runs-on: linux-amd64-cpu8
+    runs-on: oss-ubuntu24-x64
     timeout-minutes: 10
     permissions:
       actions: read
@@ -316,7 +316,7 @@ jobs:
   release-helm:
     name: Release Helm Chart (OCI)
     needs: tag-ghcr-release
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     timeout-minutes: 10
     permissions:
       packages: write
@@ -348,7 +348,7 @@ jobs:
     name: Publish Release Assets
     needs: [assemble, release-helm, release-notes]
     if: ${{ !cancelled() && needs.assemble.result == 'success' && needs.release-helm.result == 'success' && (inputs.is-prerelease || inputs.release-notes-reused || needs.release-notes.result == 'success') }}
-    runs-on: linux-amd64-cpu8
+    runs-on: oss-linux-small
     timeout-minutes: 10
     permissions:
       contents: write

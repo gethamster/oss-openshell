@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   label-non-maintainer-issues:
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     if: github.repository_owner == 'NVIDIA'
     steps:
       - name: Check contributor permissions

@@ -20,7 +20,7 @@ jobs:
   hint:
     name: Post next-step hint for E2E label
     if: github.event.label.name == 'test:e2e' || github.event.label.name == 'test:e2e-gpu' || github.event.label.name == 'test:e2e-kubernetes'
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     permissions:
       pull-requests: write
       actions: read

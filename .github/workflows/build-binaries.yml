@@ -37,9 +37,9 @@ jobs:
       matrix:
         include:
           - triple: x86_64-unknown-linux-musl
-            runner: linux-amd64-cpu8
+            runner: oss-ubuntu24-x64
           - triple: aarch64-unknown-linux-musl
-            runner: linux-arm64-cpu8
+            runner: oss-ubuntu24-arm64
           - triple: aarch64-apple-darwin
             runner: macos-15-xlarge
     runs-on: ${{ matrix.runner }}
@@ -71,9 +71,9 @@ jobs:
       matrix:
         include:
           - triple: x86_64-unknown-linux-musl
-            runner: linux-amd64-cpu8
+            runner: oss-ubuntu24-x64
           - triple: aarch64-unknown-linux-musl
-            runner: linux-arm64-cpu8
+            runner: oss-ubuntu24-arm64
           - triple: aarch64-apple-darwin
             runner: macos-15-xlarge
     runs-on: ${{ matrix.runner }}
@@ -89,9 +89,9 @@ jobs:
       matrix:
         include:
           - triple: x86_64-unknown-linux-gnu
-            runner: linux-amd64-cpu8
+            runner: oss-ubuntu24-x64
           - triple: aarch64-unknown-linux-gnu
-            runner: linux-arm64-cpu8
+            runner: oss-ubuntu24-arm64
           - triple: aarch64-apple-darwin
             runner: macos-15-xlarge
     runs-on: ${{ matrix.runner }}
@@ -109,19 +109,19 @@ jobs:
           - package: openshell-sandbox
             binary: openshell-sandbox
             triple: x86_64-unknown-linux-musl
-            runner: linux-amd64-cpu8
+            runner: oss-ubuntu24-x64
           - package: openshell-sandbox
             binary: openshell-sandbox
             triple: aarch64-unknown-linux-musl
-            runner: linux-arm64-cpu8
+            runner: oss-ubuntu24-arm64
           - package: openshell-supervisor
             binary: openshell-supervisor
             triple: x86_64-unknown-linux-gnu
-            runner: linux-amd64-cpu8
+            runner: oss-ubuntu24-x64
           - package: openshell-supervisor
             binary: openshell-supervisor
             triple: aarch64-unknown-linux-gnu
-            runner: linux-arm64-cpu8
+            runner: oss-ubuntu24-arm64
           - package: openshell-supervisor
             binary: openshell-supervisor
             triple: aarch64-apple-darwin
@@ -140,9 +140,9 @@ jobs:
       matrix:
         include:
           - triple: x86_64-unknown-linux-musl
-            runner: linux-amd64-cpu8
+            runner: oss-ubuntu24-x64
           - triple: aarch64-unknown-linux-musl
-            runner: linux-arm64-cpu8
+            runner: oss-ubuntu24-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps: *build_steps

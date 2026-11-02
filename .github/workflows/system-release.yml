@@ -25,11 +25,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-24.04
+          - runner: oss-ubuntu24-x64
             platform: linux-amd64
             cli: x86_64-unknown-linux-musl
             gateway: x86_64-unknown-linux-gnu
-          - runner: ubuntu-24.04-arm
+          - runner: oss-ubuntu24-arm64
             platform: linux-arm64
             cli: aarch64-unknown-linux-musl
             gateway: aarch64-unknown-linux-gnu
@@ -95,7 +95,7 @@ jobs:
 
   publish:
     needs: build
-    runs-on: ubuntu-24.04
+    runs-on: oss-ubuntu24-x64
     timeout-minutes: 15
     permissions:
       actions: read

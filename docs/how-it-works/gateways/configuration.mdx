@@ -460,7 +460,6 @@ Operator certificate authentication remains separate. Registry removals apply
 on the next refresh, within 30 seconds. After that window, an unavailable or
 invalid registry rejects authentication instead of retaining stale authority.
 
-
 Set `[openshell.gateway.mtls_auth] enabled = true` to map a verified client certificate to a CLI user identity. This gateway policy is independent of the compute driver and defaults on when a client CA is configured without OIDC. The listener allows bearer-only clients and validates any client certificate presented against the configured CA. Supervisors use `guest_tls_ca` to authenticate the gateway and sandbox bearer tokens to authenticate their RPCs.
 
 Set `[openshell.gateway.mtls_auth] operator_enabled = true`,

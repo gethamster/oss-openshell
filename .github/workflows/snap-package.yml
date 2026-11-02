@@ -26,10 +26,10 @@ jobs:
         include:
           - arch: amd64
             rust_arch: x86_64
-            runner: linux-amd64-cpu8
+            runner: oss-ubuntu24-x64
           - arch: arm64
             rust_arch: aarch64
-            runner: linux-arm64-cpu8
+            runner: oss-ubuntu24-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:

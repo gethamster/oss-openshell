@@ -49,7 +49,7 @@ jobs:
   # Dispatch inputs are free-form, so confirm they describe a published release.
   verify:
     name: Verify Release Inputs
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     timeout-minutes: 5
     steps:
       - name: Check tag, commit and wheels
@@ -82,7 +82,7 @@ jobs:
   trigger:
     name: Trigger Wheel Publish
     needs: verify
-    runs-on: [self-hosted, nv]
+    runs-on: oss-linux-small
     timeout-minutes: 10
     steps:
       - name: Trigger GitLab CI

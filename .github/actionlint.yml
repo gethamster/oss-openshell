@@ -3,14 +3,15 @@
 
 self-hosted-runner:
   labels:
-    - linux-amd64-cpu8
-    - linux-amd64-gpu-rtxpro6000-latest-1
-    - linux-arm64-cpu8
-    - linux-arm64-gpu-l4-latest-1
-    - nv
-    - ubuntu-26.04
+    - oss-linux-small
+    - oss-ubuntu22-x64
+    - oss-ubuntu24-x64
+    - oss-ubuntu22-arm64
+    - oss-ubuntu24-arm64
+    - oss-ubuntu22-native-x64
+    - oss-ubuntu24-native-x64
+    - oss-ubuntu26-native-x64
     - windows-arm64
-    - wsl-amd64-gpu-rtxpro6000-latest-1
 
 paths:
   .github/workflows/windows-msvc.yml:

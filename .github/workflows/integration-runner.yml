@@ -47,9 +47,29 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(inputs['test-matrix']) }}
-    runs-on: ubuntu-24.04
+    runs-on: oss-ubuntu24-native-x64
     timeout-minutes: 90
     steps:
+      - name: Verify candidate source trust
+        env:
+          SOURCE_SHA: ${{ inputs['source-sha'] }}
+          EVENT_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::Candidate source must be a complete commit SHA.'
+            exit 1
+          fi
+          if [[ "$SOURCE_SHA" != "$EVENT_SHA" ]]; then
+            status=$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$SOURCE_SHA" --jq .status)
+            case "$status" in
+              behind|identical) ;;
+              *) echo '::error::Candidate source must match this workflow revision or belong to trusted main history.'; exit 1 ;;
+            esac
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs['source-sha'] }}

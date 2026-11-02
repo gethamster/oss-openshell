@@ -28,7 +28,7 @@ concurrency:
 jobs:
   changes:
     name: Detect deployment configuration changes
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     permissions:
       contents: read
       pull-requests: read
@@ -86,7 +86,7 @@ jobs:
     name: Scan changed deployment configuration
     needs: changes
     if: needs.changes.outputs.should_run == 'true'
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     timeout-minutes: 30
     env:
       BASE_REF: ${{ needs.changes.outputs.base_sha || github.event.merge_group.base_sha || inputs.base_sha }}
@@ -167,7 +167,7 @@ jobs:
     name: OpenShell / Trivy Changes
     needs: [changes, scan]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     steps:
       - name: Check scan result
         env:

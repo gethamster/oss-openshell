@@ -4,7 +4,12 @@ on:
   push:
     branches:
       - "pull-request/[0-9]+"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      run-gpu-e2e:
+        description: Request GPU tests (fails explicitly until GPU runners are provisioned)
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -15,7 +20,7 @@ concurrency:
 jobs:
   pr_metadata:
     name: Resolve PR metadata
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     permissions:
       contents: read
       pull-requests: read
@@ -37,6 +42,7 @@ jobs:
         if: steps.gate.outputs.should_run == 'true'
         env:
           EVENT_NAME: ${{ github.event_name }}
+          RUN_GPU_E2E: ${{ inputs.run-gpu-e2e || false }}
           LABELS_JSON: ${{ steps.gate.outputs.labels_json }}
         shell: bash
         run: |
@@ -50,7 +56,7 @@ jobs:
               ;;
             *)
               run_core_e2e=true
-              run_gpu_e2e=true
+              run_gpu_e2e="$RUN_GPU_E2E"
               run_kubernetes_ha_e2e=false
               run_kubernetes_credential_drivers_e2e=false
               ;;
@@ -74,7 +80,7 @@ jobs:
     if: needs.pr_metadata.outputs.should_run == 'true' && needs.pr_metadata.outputs.run_any_e2e == 'true'
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     timeout-minutes: 5
     outputs:
       cargo: ${{ steps.version.outputs.cargo }}
@@ -121,9 +127,9 @@ jobs:
       matrix:
         include:
           - triple: x86_64-unknown-linux-gnu
-            runner: linux-amd64-cpu8
+            runner: oss-ubuntu24-x64
           - triple: aarch64-unknown-linux-gnu
-            runner: linux-arm64-cpu8
+            runner: oss-ubuntu24-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
@@ -156,15 +162,15 @@ jobs:
           - package: openshell-driver-docker
             binary: openshell-driver-docker
             triple: aarch64-unknown-linux-gnu
-            runner: linux-arm64-cpu8
+            runner: oss-ubuntu24-arm64
           - package: openshell-driver-podman
             binary: openshell-driver-podman
             triple: x86_64-unknown-linux-gnu
-            runner: linux-amd64-cpu8
+            runner: oss-ubuntu24-x64
           - package: openshell-driver-kubernetes
             binary: openshell-driver-kubernetes
             triple: x86_64-unknown-linux-gnu
-            runner: linux-amd64-cpu8
+            runner: oss-ubuntu24-x64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
@@ -329,7 +335,7 @@ jobs:
     uses: ./.github/workflows/e2e-docker-test.yml
     with:
       image-tag: ${{ github.sha }}
-      runner: linux-arm64-cpu8
+      runner: oss-ubuntu24-arm64
 
   podman-e2e:
     needs: [pr_metadata, build-binaries, build-images]
@@ -342,7 +348,7 @@ jobs:
     with:
       image-tag: ${{ github.sha }}
       suite-matrix: >-
-        [{"suite":"ci","runner":"ubuntu-26.04","podman_major":"5","podman_package_version":"5.7.0+ds2-3build1","conmon_package_version":"2.1.13+ds1-2","cmd":"mise run --no-deps --skip-deps e2e:podman:ci"}]
+        [{"suite":"ci","runner":"oss-ubuntu26-native-x64","podman_major":"5","podman_package_version":"5.7.0+ds2-3build1","conmon_package_version":"2.1.13+ds1-2","cmd":"mise run --no-deps --skip-deps e2e:podman:ci"}]
 
   podman-additional-ca-e2e:
     needs: [pr_metadata, build-binaries, build-images]
@@ -355,7 +361,7 @@ jobs:
     with:
       image-tag: ${{ github.sha }}
       suite-matrix: >-
-        [{"suite":"additional-ca","runner":"ubuntu-26.04","podman_major":"5","podman_package_version":"5.7.0+ds2-3build1","conmon_package_version":"2.1.13+ds1-2","cmd":"OPENSHELL_E2E_PODMAN_TEST=additional_ca mise run --no-deps --skip-deps e2e:podman"}]
+        [{"suite":"additional-ca","runner":"oss-ubuntu26-native-x64","podman_major":"5","podman_package_version":"5.7.0+ds2-3build1","conmon_package_version":"2.1.13+ds1-2","cmd":"OPENSHELL_E2E_PODMAN_TEST=additional_ca mise run --no-deps --skip-deps e2e:podman"}]
 
   vm-e2e:
     needs: [pr_metadata, build-binaries, build-vm-driver]
@@ -388,7 +394,7 @@ jobs:
     uses: ./.github/workflows/e2e-docker-test.yml
     with:
       image-tag: ${{ github.sha }}
-      runner: linux-arm64-cpu8
+      runner: oss-ubuntu24-arm64
       gateway-artifact: openshell-gateway-plain-aarch64-unknown-linux-gnu
       external-driver-binary: openshell-driver-docker
       suite-matrix: >-
@@ -407,7 +413,7 @@ jobs:
       gateway-artifact: openshell-gateway-plain-x86_64-unknown-linux-gnu
       external-driver-binary: openshell-driver-podman
       suite-matrix: >-
-        [{"suite":"external-driver","runner":"ubuntu-26.04","podman_major":"5","podman_package_version":"5.7.0+ds2-3build1","conmon_package_version":"2.1.13+ds1-2","cmd":"mise run --no-deps --skip-deps e2e:podman:external-driver"}]
+        [{"suite":"external-driver","runner":"oss-ubuntu26-native-x64","podman_major":"5","podman_package_version":"5.7.0+ds2-3build1","conmon_package_version":"2.1.13+ds1-2","cmd":"mise run --no-deps --skip-deps e2e:podman:external-driver"}]
 
   vm-external-driver-e2e:
     needs: [pr_metadata, build-binaries, build-gateway-plain, build-vm-driver]
@@ -556,7 +562,7 @@ jobs:
       - kubernetes-workspace-managed-e2e
       - kubernetes-workspace-operator-e2e
     if: always() && needs.pr_metadata.outputs.should_run == 'true' && needs.pr_metadata.outputs.run_core_e2e == 'true'
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -569,7 +575,7 @@ jobs:
     name: GPU E2E result
     needs: [pr_metadata, gpu-e2e]
     if: always() && needs.pr_metadata.outputs.should_run == 'true' && needs.pr_metadata.outputs.run_gpu_e2e == 'true'
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -582,7 +588,7 @@ jobs:
     name: Kubernetes HA E2E result
     needs: [pr_metadata, kubernetes-ha-e2e]
     if: always() && needs.pr_metadata.outputs.should_run == 'true' && needs.pr_metadata.outputs.run_kubernetes_ha_e2e == 'true'
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -595,7 +601,7 @@ jobs:
     name: Kubernetes Credential Drivers E2E result
     needs: [pr_metadata, kubernetes-credential-drivers-e2e]
     if: always() && needs.pr_metadata.outputs.should_run == 'true' && needs.pr_metadata.outputs.run_kubernetes_credential_drivers_e2e == 'true'
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

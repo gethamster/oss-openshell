@@ -111,7 +111,7 @@ defaults:
 
 jobs:
   sync:
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     timeout-minutes: 20
     steps:
       - name: Checkout automation

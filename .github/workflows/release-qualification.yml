@@ -19,8 +19,6 @@ on:
         required: true
         type: boolean
     secrets:
-      CODEX_SECURITY_API_KEY:
-        required: true
       CACHIX_AUTH_TOKEN:
         required: false
 
@@ -114,7 +112,7 @@ jobs:
     with:
       image-tag: ${{ inputs.source-sha }}
       checkout-ref: ${{ inputs.source-sha }}
-      runner: linux-arm64-cpu8
+      runner: oss-ubuntu24-arm64
 
   vm-e2e:
     permissions:
@@ -127,7 +125,7 @@ jobs:
 
   protobuf-compatibility:
     name: Protobuf Compatibility
-    runs-on: linux-amd64-cpu8
+    runs-on: oss-ubuntu24-x64
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -140,18 +138,6 @@ jobs:
         with:
           ref: refs/tags/${{ env.RELEASE_TAG }}
 
-  compatibility-review:
-    name: Compatibility Review (advisory)
-    permissions:
-      contents: read
-      pull-requests: read
-    uses: ./.github/workflows/codex-compatibility.yml
-    with:
-      candidate_ref: ${{ inputs.release-tag }}
-      source_sha: ${{ inputs.source-sha }}
-    secrets:
-      CODEX_SECURITY_API_KEY: ${{ secrets.CODEX_SECURITY_API_KEY }}
-
   qualification-result:
     name: Release Qualification
     if: always()
@@ -162,7 +148,7 @@ jobs:
       - feature-specific-integration
       - docker-e2e
       - vm-e2e
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     timeout-minutes: 5
     permissions:
       contents: read
@@ -212,8 +198,6 @@ jobs:
             echo "| Docker E2E | ${DOCKER_E2E_RESULT} |"
             echo "| VM E2E | ${VM_E2E_RESULT} |"
             echo
-            echo "Advisory compatibility findings do not affect the qualification result."
-            echo "See the Compatibility Review job and compatibility-review-run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT} artifact in [this run](${run_url})."
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload qualification result

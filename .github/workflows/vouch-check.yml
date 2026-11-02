@@ -11,7 +11,7 @@ permissions:
 jobs:
   vouch-gate:
     if: github.repository_owner == 'NVIDIA'
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     env:
       ORG_READ_TOKEN: ${{ secrets.ORG_READ_TOKEN }}
     steps:

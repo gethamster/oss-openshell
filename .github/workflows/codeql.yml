@@ -4,10 +4,7 @@
 name: CodeQL
 
 on:
-  schedule:
-    - cron: "29 5 * * *"
   workflow_dispatch:
-  workflow_call:
     inputs:
       candidate_ref:
         description: Optional pre-release tag to scan instead of the triggering revision
@@ -29,7 +26,7 @@ concurrency:
 jobs:
   analyze:
     name: CodeQL (${{ matrix.language }})
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     timeout-minutes: 90
     env:
       # Keep Rust test fixtures out of production-focused security results.
@@ -153,7 +150,7 @@ jobs:
     name: ${{ inputs.fail-on-findings && 'OpenShell / CodeQL' || 'OpenShell / CodeQL (informational)' }}
     if: always()
     needs: analyze
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     permissions: {}
     steps:
       - name: Evaluate analyzer execution

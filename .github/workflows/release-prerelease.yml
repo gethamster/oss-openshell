@@ -20,7 +20,7 @@ permissions:
 jobs:
   resolve:
     name: Resolve Prerelease Tag
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     timeout-minutes: 5
     permissions:
       contents: write
@@ -145,14 +145,13 @@ jobs:
       source-sha: ${{ needs.build.outputs.source_sha }}
       is-prerelease: true
     secrets:
-      CODEX_SECURITY_API_KEY: ${{ secrets.CODEX_SECURITY_API_KEY }}
       CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
   notify-prerelease-success:
     name: Notify Prerelease Success
     needs: [resolve, build, publish, qualify]
     if: success()
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     timeout-minutes: 2
     permissions: {}
     steps:
@@ -180,7 +179,7 @@ jobs:
     name: Notify Prerelease Failure
     needs: [resolve, build, publish, qualify]
     if: failure()
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     timeout-minutes: 2
     permissions:
       actions: read
