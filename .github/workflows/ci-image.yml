@@ -28,10 +28,10 @@ jobs:
         include:
           - arch: amd64
             platform: linux/amd64
-            runner: linux-amd64-cpu8
+            runner: oss-ubuntu24-x64
           - arch: arm64
             platform: linux/arm64
-            runner: linux-arm64-cpu8
+            runner: oss-ubuntu24-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
@@ -87,7 +87,7 @@ jobs:
   merge-ci-image:
     name: Merge manifest
     needs: build-ci-image
-    runs-on: linux-amd64-cpu8
+    runs-on: oss-ubuntu24-x64
     timeout-minutes: 10
     steps:
       - name: Log in to GitHub Container Registry

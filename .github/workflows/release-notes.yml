@@ -29,7 +29,7 @@ permissions:
 jobs:
   release-notes:
     name: Write Release Notes
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     timeout-minutes: 30
     continue-on-error: ${{ inputs.advisory }}
     env:

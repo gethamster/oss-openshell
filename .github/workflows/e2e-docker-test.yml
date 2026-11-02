@@ -12,7 +12,7 @@ on:
       runner:
         required: false
         type: string
-        default: linux-amd64-cpu8
+        default: oss-ubuntu24-x64
       checkout-ref:
         required: false
         type: string

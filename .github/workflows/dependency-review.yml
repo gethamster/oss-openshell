@@ -28,7 +28,7 @@ concurrency:
 jobs:
   review:
     name: Dependency Review (informational)
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     env:
       BASE_REF: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || inputs.base_sha }}
       HEAD_REF: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || inputs.head_sha }}

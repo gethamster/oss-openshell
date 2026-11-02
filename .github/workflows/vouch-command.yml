@@ -17,7 +17,7 @@ jobs:
     if: >-
       github.repository_owner == 'NVIDIA' &&
       github.event.comment.body == '/vouch'
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     steps:
       - name: Process /vouch command
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9

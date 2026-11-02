@@ -21,7 +21,7 @@ jobs:
   describe-change:
     name: Comment on the approver set change if MAINTAINERS.md has changed
     if: github.repository_owner == 'NVIDIA'
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     timeout-minutes: 10
     steps:
       # Default branch only. The helper must be the reviewed version, not

@@ -27,7 +27,7 @@ permissions:
 jobs:
   DCOAssistant:
     if: github.repository_owner == 'NVIDIA'
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     steps:
       - name: "DCO Assistant"
         if: |

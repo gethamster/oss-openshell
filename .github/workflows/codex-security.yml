@@ -86,7 +86,7 @@ jobs:
     name: Codex Security (${{ inputs.candidate_ref || github.ref_name }})
     # The agent executes no shell commands on the repository self-hosted runner,
     # so its preflight never scopes the diff and it seals no draft.
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     timeout-minutes: 120
     outputs:
       base_sha: ${{ steps.range.outputs.base_sha }}
@@ -317,7 +317,7 @@ jobs:
     name: ${{ inputs.fail-on-findings && 'OpenShell / Codex Security' || 'OpenShell / Codex Security (informational)' }}
     if: ${{ always() }}
     needs: analyze
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     permissions: {}
     steps:
       - name: Evaluate scanner execution

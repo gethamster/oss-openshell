@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   stale-issues:
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     permissions:
       issues: write
     steps:
@@ -37,7 +37,7 @@ jobs:
             Closing this issue after 14 days with no activity since it was marked stale.
             Reopen it if the work is still relevant.
   stale-pull-requests:
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     permissions:
       issues: write
       pull-requests: write

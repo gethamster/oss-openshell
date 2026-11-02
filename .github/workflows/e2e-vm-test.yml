@@ -35,7 +35,7 @@ permissions:
 jobs:
   e2e:
     name: E2E (rust-vm-${{ inputs.suite-name }})
-    runs-on: ubuntu-24.04
+    runs-on: oss-ubuntu24-native-x64
     timeout-minutes: 90
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

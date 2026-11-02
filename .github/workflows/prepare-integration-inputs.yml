@@ -42,7 +42,7 @@ permissions:
 jobs:
   prepare:
     name: Prepare tmachine inputs
-    runs-on: ubuntu-24.04
+    runs-on: oss-ubuntu24-native-x64
     timeout-minutes: 30
     outputs:
       source_sha: ${{ steps.artifact-run.outputs.source_sha }}

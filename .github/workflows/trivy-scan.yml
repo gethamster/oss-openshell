@@ -82,7 +82,7 @@ env:
 jobs:
   scan:
     name: ${{ inputs.fail-on-findings && 'OpenShell / Trivy' || 'OpenShell / Trivy (informational)' }}
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     timeout-minutes: 60
     outputs:
       sarif-batches: ${{ steps.sarif.outputs.batches }}
@@ -198,7 +198,7 @@ jobs:
         && needs.scan.outputs.sarif-batches != ''
         && needs.scan.outputs.artifact-id != ''
       }}
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     timeout-minutes: 10
     permissions:
       contents: read

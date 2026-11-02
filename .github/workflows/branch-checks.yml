@@ -24,7 +24,7 @@ concurrency:
 jobs:
   pr_metadata:
     name: Resolve PR metadata
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     permissions:
       contents: read
       pull-requests: read
@@ -76,7 +76,7 @@ jobs:
       ${{ !cancelled() && needs.pr_metadata.outputs.pr_number != '0'
           && needs.compatibility-review.outputs.has_findings == 'true'
           && needs.compatibility-review.outputs.report_artifact != '' }}
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     timeout-minutes: 5
     continue-on-error: true
     permissions:
@@ -117,7 +117,7 @@ jobs:
     name: Protobuf Compatibility
     needs: pr_metadata
     if: needs.pr_metadata.outputs.should_run == 'true'
-    runs-on: linux-amd64-cpu8
+    runs-on: oss-ubuntu24-x64
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -137,7 +137,7 @@ jobs:
     name: mise Lockfile
     needs: pr_metadata
     if: needs.pr_metadata.outputs.should_run == 'true'
-    runs-on: linux-amd64-cpu8
+    runs-on: oss-ubuntu24-x64
     timeout-minutes: 30
     container:
       image: ghcr.io/nvidia/openshell/ci:9cb72baa2e61a1b5f12407e6e82da7fdba0aa722@sha256:67a9a0c32cb99825e6d3e9d9eec45d67149ea1ff7c11a1b1e1b3480d2d3df684
@@ -162,7 +162,7 @@ jobs:
     name: License Headers
     needs: pr_metadata
     if: needs.pr_metadata.outputs.should_run == 'true'
-    runs-on: linux-amd64-cpu8
+    runs-on: oss-ubuntu24-x64
     timeout-minutes: 30
     container:
       image: ghcr.io/nvidia/openshell/ci:9cb72baa2e61a1b5f12407e6e82da7fdba0aa722@sha256:67a9a0c32cb99825e6d3e9d9eec45d67149ea1ff7c11a1b1e1b3480d2d3df684
@@ -182,7 +182,7 @@ jobs:
     name: Cargo Deny
     needs: pr_metadata
     if: needs.pr_metadata.outputs.should_run == 'true'
-    runs-on: linux-amd64-cpu8
+    runs-on: oss-ubuntu24-x64
     timeout-minutes: 30
     defaults:
       run:
@@ -212,7 +212,7 @@ jobs:
     name: Rust format
     needs: pr_metadata
     if: needs.pr_metadata.outputs.should_run == 'true'
-    runs-on: linux-amd64-cpu8
+    runs-on: oss-ubuntu24-x64
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -241,7 +241,7 @@ jobs:
     name: Cargo lockfiles
     needs: pr_metadata
     if: needs.pr_metadata.outputs.should_run == 'true'
-    runs-on: linux-amd64-cpu8
+    runs-on: oss-ubuntu24-x64
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -265,9 +265,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: linux-amd64-cpu8
+          - runner: oss-ubuntu24-x64
             system: x86_64-linux
-          - runner: linux-arm64-cpu8
+          - runner: oss-ubuntu24-arm64
             system: aarch64-linux
           - runner: macos-15-xlarge
             system: aarch64-darwin
@@ -309,9 +309,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: linux-amd64-cpu8
+          - runner: oss-ubuntu24-x64
             system: x86_64-linux
-          - runner: linux-arm64-cpu8
+          - runner: oss-ubuntu24-arm64
             system: aarch64-linux
           - runner: macos-15-xlarge
             system: aarch64-darwin
@@ -396,7 +396,7 @@ jobs:
     if: needs.pr_metadata.outputs.should_run == 'true'
     # Bare runner: the test script starts a disposable PostgreSQL container
     # with the host's Docker.
-    runs-on: linux-amd64-cpu8
+    runs-on: oss-ubuntu24-x64
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -428,9 +428,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: linux-amd64-cpu8
+          - runner: oss-ubuntu24-x64
             system: x86_64-linux
-          - runner: linux-arm64-cpu8
+          - runner: oss-ubuntu24-arm64
             system: aarch64-linux
           - runner: macos-15-xlarge
             system: aarch64-darwin
@@ -484,7 +484,7 @@ jobs:
     name: Rust feature alias
     needs: pr_metadata
     if: needs.pr_metadata.outputs.should_run == 'true'
-    runs-on: linux-amd64-cpu8
+    runs-on: oss-ubuntu24-x64
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -509,7 +509,7 @@ jobs:
     name: Rust gateway core features
     needs: pr_metadata
     if: needs.pr_metadata.outputs.should_run == 'true'
-    runs-on: linux-amd64-cpu8
+    runs-on: oss-ubuntu24-x64
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -536,7 +536,7 @@ jobs:
     name: Rust gateway extended features
     needs: pr_metadata
     if: needs.pr_metadata.outputs.should_run == 'true'
-    runs-on: linux-amd64-cpu8
+    runs-on: oss-ubuntu24-x64
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -565,7 +565,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [linux-amd64-cpu8, linux-arm64-cpu8]
+        runner: [oss-ubuntu24-x64, oss-ubuntu24-arm64]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     container:
@@ -605,7 +605,7 @@ jobs:
     name: Go SDK
     needs: pr_metadata
     if: needs.pr_metadata.outputs.should_run == 'true'
-    runs-on: linux-amd64-cpu8
+    runs-on: oss-ubuntu24-x64
     timeout-minutes: 30
     container:
       image: ghcr.io/nvidia/openshell/ci:9cb72baa2e61a1b5f12407e6e82da7fdba0aa722@sha256:67a9a0c32cb99825e6d3e9d9eec45d67149ea1ff7c11a1b1e1b3480d2d3df684
@@ -625,7 +625,7 @@ jobs:
     name: Markdown
     needs: pr_metadata
     if: needs.pr_metadata.outputs.should_run == 'true'
-    runs-on: linux-amd64-cpu8
+    runs-on: oss-ubuntu24-x64
     timeout-minutes: 30
     container:
       image: ghcr.io/nvidia/openshell/ci:9cb72baa2e61a1b5f12407e6e82da7fdba0aa722@sha256:67a9a0c32cb99825e6d3e9d9eec45d67149ea1ff7c11a1b1e1b3480d2d3df684
@@ -645,7 +645,7 @@ jobs:
     name: TypeScript SDK
     needs: pr_metadata
     if: needs.pr_metadata.outputs.should_run == 'true'
-    runs-on: linux-amd64-cpu8
+    runs-on: oss-ubuntu24-x64
     timeout-minutes: 30
     container:
       image: ghcr.io/nvidia/openshell/ci:9cb72baa2e61a1b5f12407e6e82da7fdba0aa722@sha256:67a9a0c32cb99825e6d3e9d9eec45d67149ea1ff7c11a1b1e1b3480d2d3df684

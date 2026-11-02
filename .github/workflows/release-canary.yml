@@ -56,7 +56,7 @@ jobs:
   ubuntu-deb:
     name: Ubuntu DEB
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     timeout-minutes: 20
     steps:
       - name: Remove snapd
@@ -94,7 +94,7 @@ jobs:
   fedora:
     name: Fedora RPM
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
-    runs-on: linux-amd64-cpu8
+    runs-on: oss-ubuntu24-native-x64
     timeout-minutes: 20
     env:
       FEDORA_CANARY_CONTAINER: openshell-fedora-canary-${{ github.run_id }}-${{ github.run_attempt }}
@@ -194,7 +194,7 @@ jobs:
   ubuntu-snap-system-docker:
     name: Ubuntu snap with system Docker
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     env:
       OPENSHELL_INSTALL_METHOD: snap
     timeout-minutes: 20
@@ -316,7 +316,7 @@ jobs:
   ubuntu-snap-docker-preflight:
     name: Ubuntu snap Docker preflight
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     env:
       OPENSHELL_INSTALL_METHOD: snap
     timeout-minutes: 20
@@ -378,7 +378,7 @@ jobs:
   kubernetes:
     name: Kubernetes Helm (kind)
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     timeout-minutes: 20
     env:
       KIND_CLUSTER_NAME: release-canary-${{ github.run_id }}

@@ -33,9 +33,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: linux-amd64-cpu8
+          - runner: oss-ubuntu24-x64
             system: x86_64-linux
-          - runner: linux-arm64-cpu8
+          - runner: oss-ubuntu24-arm64
             system: aarch64-linux
           - runner: macos-15-xlarge
             system: aarch64-darwin

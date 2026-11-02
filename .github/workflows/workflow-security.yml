@@ -40,7 +40,7 @@ concurrency:
 jobs:
   actionlint:
     name: Actionlint (informational)
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     permissions:
       contents: read
       security-events: write
@@ -128,7 +128,7 @@ jobs:
 
   zizmor:
     name: ${{ inputs.fail-on-findings && 'Zizmor High report' || 'Zizmor High report (informational)' }}
-    runs-on: ubuntu-latest
+    runs-on: oss-linux-small
     permissions:
       contents: read
       security-events: write

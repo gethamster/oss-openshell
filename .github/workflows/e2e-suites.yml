@@ -49,12 +49,12 @@ jobs:
             installer: deb
             family: conformance
             package: sandbox
-            runner: ubuntu-24.04
+            runner: oss-ubuntu24-native-x64
           - environment: ubuntu-docker-rootful-keycloak
             installer: deb
             family: features
             package: keycloak-provider-refresh
-            runner: ubuntu-24.04
+            runner: oss-ubuntu24-native-x64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
@@ -135,7 +135,7 @@ jobs:
     name: E2E suites result
     needs: [suites]
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: oss-ubuntu24-native-x64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
