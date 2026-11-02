@@ -46,10 +46,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(inputs.suite-matrix) }}
     container:
-      image: ghcr.io/nvidia/openshell/ci:37072ee81cd7b294c714bfa5ecc829b6927b3d70@sha256:ffa96b8009de6e28bbf157060440c3abb312d3bcda444e9571c539c8c6115615
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
+      image: us-central1-docker.pkg.dev/oss-foundry/oss-ci-builds/openshell-ci@sha256:fdea6e797426fc3d96999a29e4c1b108c48dbdf1cfe5507da0b5648c20d2d267
       options: --privileged
       volumes:
         - /var/run/docker.sock:/var/run/docker.sock
