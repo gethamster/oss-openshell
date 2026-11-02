@@ -1159,6 +1159,7 @@ pub fn is_gateway_mintable_strategy(strategy: ProviderCredentialRefreshStrategy)
             | ProviderCredentialRefreshStrategy::Oauth2ClientCredentials
             | ProviderCredentialRefreshStrategy::GoogleServiceAccountJwt
             | ProviderCredentialRefreshStrategy::AwsStsAssumeRole
+            | ProviderCredentialRefreshStrategy::CursorApiKeyExchange
     )
 }
 
@@ -1409,6 +1410,7 @@ pub fn provider_refresh_strategy_from_yaml(raw: &str) -> Option<ProviderCredenti
             Some(ProviderCredentialRefreshStrategy::GoogleServiceAccountJwt)
         }
         "aws_sts_assume_role" => Some(ProviderCredentialRefreshStrategy::AwsStsAssumeRole),
+        "cursor_api_key_exchange" => Some(ProviderCredentialRefreshStrategy::CursorApiKeyExchange),
         _ => None,
     }
 }
@@ -1424,6 +1426,7 @@ pub fn provider_refresh_strategy_to_yaml(
         ProviderCredentialRefreshStrategy::Oauth2ClientCredentials => "oauth2_client_credentials",
         ProviderCredentialRefreshStrategy::GoogleServiceAccountJwt => "google_service_account_jwt",
         ProviderCredentialRefreshStrategy::AwsStsAssumeRole => "aws_sts_assume_role",
+        ProviderCredentialRefreshStrategy::CursorApiKeyExchange => "cursor_api_key_exchange",
         ProviderCredentialRefreshStrategy::Unspecified => "unspecified",
     }
 }

@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Hamster
+# SPDX-License-Identifier: Apache-2.0
+
+# Import after setting binaries to the dedicated Cursor executable in your image.
+# Configure api_key as secret refresh material, then rotate the credential.
+id: cursor-subscription
+display_name: Cursor
+description: Cursor CLI subscription with gateway-owned user API key exchange
+category: agent
+credentials:
+  - name: access_token
+    env_vars: [CURSOR_AUTH_TOKEN]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+    refresh:
+      strategy: cursor_api_key_exchange
+      token_url: https://api2.cursor.sh/auth/exchange_user_api_key
+      refresh_before_seconds: 300
+      max_lifetime_seconds: 3600
+      material:
+        - name: api_key
+          required: true
+          secret: true
+endpoints:
+  - host: api2.cursor.sh
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+binaries: []

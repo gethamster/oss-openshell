@@ -2107,6 +2107,7 @@ fn provider_refresh_strategy(strategy: &str) -> Result<ProviderCredentialRefresh
             Ok(ProviderCredentialRefreshStrategy::GoogleServiceAccountJwt)
         }
         "aws_sts_assume_role" => Ok(ProviderCredentialRefreshStrategy::AwsStsAssumeRole),
+        "cursor_api_key_exchange" => Ok(ProviderCredentialRefreshStrategy::CursorApiKeyExchange),
         _ => Err(miette!("unsupported provider refresh strategy: {strategy}")),
     }
 }
@@ -2158,6 +2159,7 @@ fn provider_refresh_strategy_name(strategy: ProviderCredentialRefreshStrategy) -
         ProviderCredentialRefreshStrategy::Oauth2ClientCredentials => "oauth2_client_credentials",
         ProviderCredentialRefreshStrategy::GoogleServiceAccountJwt => "google_service_account_jwt",
         ProviderCredentialRefreshStrategy::AwsStsAssumeRole => "aws_sts_assume_role",
+        ProviderCredentialRefreshStrategy::CursorApiKeyExchange => "cursor_api_key_exchange",
         ProviderCredentialRefreshStrategy::Unspecified => "unspecified",
     }
 }

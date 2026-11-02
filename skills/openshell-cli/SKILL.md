@@ -232,6 +232,12 @@ openshell provider refresh rotate my-provider --credential-key ACCESS_TOKEN
 
 Prefer `--secret-material-env KEY[=ENVVAR]` for secret refresh material. `--material KEY=VALUE` is for non-secret material; `--secret-material-key` marks supplied material keys as secret.
 
+For a `cursor-subscription` profile, use `--strategy cursor-api-key-exchange`
+with `--secret-material-env api_key=CURSOR_API_KEY` and credential key
+`CURSOR_AUTH_TOKEN`. Keep the API key at the gateway; the workload receives an
+access-token placeholder. Set the profile's binaries to the dedicated Cursor
+executable before attaching it.
+
 The gateway stores secret refresh material through its active credential driver.
 With Vault selected, refresh tokens, client secrets, and private keys live in
 Vault alongside injectable provider credentials; refresh state contains only
