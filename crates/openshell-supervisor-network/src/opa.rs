@@ -178,6 +178,7 @@ pub struct SandboxConfig {
 pub struct OpaEngine {
     engine: Mutex<regorus::Engine>,
     binary_identity_required: bool,
+    destination_guard: RwLock<Option<Arc<dyn crate::provider_proxy::DestinationGuard>>>,
     generation: Arc<AtomicU64>,
     middleware_runner: RwLock<ChainRunner>,
     websocket_assembly_budget: crate::l7::websocket::WebSocketAssemblyBudget,
@@ -312,6 +313,7 @@ impl OpaEngine {
         Self {
             engine: Mutex::new(engine),
             binary_identity_required,
+            destination_guard: RwLock::new(None),
             generation,
             middleware_runner: RwLock::new(ChainRunner::default()),
             websocket_assembly_budget: crate::l7::websocket::WebSocketAssemblyBudget::default(),
@@ -451,6 +453,53 @@ impl OpaEngine {
     /// Expands access presets and validates L7 config.
     pub fn from_proto(proto: &ProtoSandboxPolicy) -> Result<Self> {
         Self::from_proto_with_pid(proto, 0)
+    }
+
+    /// Explicit VM-scoped mediation never claims to resolve guest executable identity.
+    pub(crate) fn from_vm_policy(proto: &ProtoSandboxPolicy) -> Result<Self> {
+        Self::from_proto_with_pid_and_binary_identity_required(proto, 0, false)
+    }
+
+    pub(crate) fn set_destination_guard(
+        &self,
+        guard: Arc<dyn crate::provider_proxy::DestinationGuard>,
+    ) -> Result<()> {
+        *self
+            .destination_guard
+            .write()
+            .map_err(|_| miette::miette!("destination guard unavailable"))? = Some(guard);
+        Ok(())
+    }
+
+    pub(crate) fn check_destination_host(&self, host: &str) -> Result<()> {
+        if let Some(guard) = self
+            .destination_guard
+            .read()
+            .map_err(|_| miette::miette!("destination guard unavailable"))?
+            .as_ref()
+        {
+            guard
+                .check_host(host)
+                .map_err(|_| miette::miette!("hostname denied by external isolation guard"))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_destination_addresses(
+        &self,
+        addresses: &[std::net::SocketAddr],
+    ) -> Result<()> {
+        if let Some(guard) = self
+            .destination_guard
+            .read()
+            .map_err(|_| miette::miette!("destination guard unavailable"))?
+            .as_ref()
+        {
+            guard
+                .check(addresses)
+                .map_err(|_| miette::miette!("destination denied by external isolation guard"))?;
+        }
+        Ok(())
     }
 
     /// Create OPA engine from a typed proto policy with symlink resolution.
@@ -786,7 +835,11 @@ impl OpaEngine {
         registry: Option<MiddlewareRegistry>,
         commit_credentials: impl FnOnce(),
     ) -> Result<PolicyGenerationGuard> {
-        let new = Self::from_proto_with_pid(proto, entrypoint_pid)?;
+        let new = Self::from_proto_with_pid_and_binary_identity_required(
+            proto,
+            entrypoint_pid,
+            self.binary_identity_required,
+        )?;
         let new_engine = new
             .engine
             .into_inner()
