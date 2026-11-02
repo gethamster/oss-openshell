@@ -6,6 +6,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 WORK="$(mktemp -d)"
+export XDG_CONFIG_HOME="${WORK}/config"
 UV="$(mise which uv)"
 trap 'rm -rf "${WORK}"' EXIT
 
