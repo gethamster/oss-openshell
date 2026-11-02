@@ -86,6 +86,10 @@ const SANDBOX_CAS_RETRY_LIMIT: usize = 16;
 #[path = "interactive_exec_tests.rs"]
 mod interactive_exec_tests;
 
+#[cfg(test)]
+#[path = "forward_tcp_tests.rs"]
+mod forward_tcp_tests;
+
 /// Terminal status for a resume cursor issued by a cursor space that is gone.
 ///
 /// Retrying the same token fails identically, so the guidance has to be
@@ -3135,13 +3139,21 @@ fn validate_tcp_target_parts(host: &str, _port: u32) -> Result<String, Status> {
     }
 }
 
-async fn bridge_forward_tcp_stream<S>(
-    mut inbound: tonic::Streaming<TcpForwardFrame>,
+/// Bridges one `ForwardTcp` stream and its supervisor relay until either side ends.
+///
+/// The relay (and the caller's per-sandbox connection slot) is released when the
+/// sandbox side closes, the relay fails, or the client goes away. A cancelled
+/// client must end the bridge even while the sandbox side is idle: a keep-alive
+/// server never closes its side on its own, so waiting only on the relay would
+/// hold the slot forever.
+async fn bridge_forward_tcp_stream<I, S>(
+    mut inbound: I,
     relay_stream: S,
     tx: mpsc::Sender<Result<TcpForwardFrame, Status>>,
     sandbox_id: &str,
     channel_id: &str,
 ) where
+    I: tokio_stream::Stream<Item = Result<TcpForwardFrame, Status>> + Send + Unpin + 'static,
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
 {
     let (mut relay_read, mut relay_write) = tokio::io::split(relay_stream);
@@ -3150,7 +3162,10 @@ async fn bridge_forward_tcp_stream<S>(
     let channel_id_in = channel_id.to_string();
     tokio::spawn(async move {
         loop {
-            match inbound.message().await {
+            match tokio_stream::StreamExt::next(&mut inbound)
+                .await
+                .transpose()
+            {
                 Ok(Some(frame)) => {
                     let Some(openshell_core::proto::tcp_forward_frame::Payload::Data(data)) =
                         frame.payload
@@ -3180,7 +3195,14 @@ async fn bridge_forward_tcp_stream<S>(
 
     let mut buf = vec![0u8; TCP_FORWARD_CHUNK_SIZE];
     loop {
-        match tokio::io::AsyncReadExt::read(&mut relay_read, &mut buf).await {
+        let read = tokio::select! {
+            read = tokio::io::AsyncReadExt::read(&mut relay_read, &mut buf) => read,
+            () = tx.closed() => {
+                debug!(sandbox_id = %sandbox_id, channel_id = %channel_id, "ForwardTcp: client went away");
+                break;
+            }
+        };
+        match read {
             Ok(0) => break,
             Ok(n) => {
                 let frame = TcpForwardFrame {
