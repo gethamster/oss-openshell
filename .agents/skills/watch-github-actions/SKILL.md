@@ -81,6 +81,12 @@ gh run list --branch feature-branch
 
 ## Check Runs for a PR
 
+On `gethamster/oss-openshell`, use maintainer-dispatched `Branch Checks` and
+`Helm Lint` at the current PR head; the NVIDIA mirror app is not installed.
+`Required CI Gates` validates the exact commit, repository, dispatcher's current
+write access, and actual job results. Follow `CI.md` for dispatch and evidence
+refresh commands. Do not manufacture a mirror or status to satisfy the gate.
+
 List workflow runs associated with a PR:
 
 ```bash

@@ -58,8 +58,9 @@ run_windows = "echo Skipping helm:lint: Helm validation is not part of the nativ
 description = "Run gateway and workspace Helm chart unit tests"
 run = """
   set -e
+  uv run --no-project python tasks/scripts/test_install_helm_unittest.py
   if ! helm plugin list | grep -q unittest; then
-    helm plugin install https://github.com/helm-unittest/helm-unittest --verify=false
+    bash tasks/scripts/install-helm-unittest.sh
   fi
   helm dependency build deploy/helm/openshell
   helm unittest deploy/helm/openshell

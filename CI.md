@@ -15,6 +15,24 @@ Manual admission does not change the bot's automatic trust policy for ready PRs.
 
 `Branch Checks` run automatically after copy-pr-bot mirrors the PR. `Required CI Gates` posts PR-head statuses that verify the mirror exists, is current, and ran the expected push-based workflows. E2E suites are opt-in because they are more expensive and publish temporary images.
 
+The `gethamster/oss-openshell` fork uses maintainer-dispatched workflows because
+NVIDIA's mirror app is not installed there. A maintainer runs `Branch Checks`
+and `Helm Lint` on a repository branch at the current PR head. The status bridge
+accepts only runs from this repository at that exact commit, dispatched by a
+user with current Write, Maintain, or Admin access. A new commit requires new
+runs; failed, cancelled, skipped, and metadata-only runs cannot satisfy a gate.
+The same workflow and optional E2E requirements still apply.
+
+```shell
+gh workflow run branch-checks.yml --ref <branch>
+gh workflow run helm-lint.yml --ref <branch>
+gh workflow run required-ci-gates.yml --ref <branch> -f pull-request=<number>
+```
+
+Completed runs refresh statuses automatically. The last command re-evaluates
+existing evidence and can also verify a status-bridge update before merging it;
+it does not set or override a check result.
+
 Merge queue validation is a second integration gate for `main`. After a PR has passed the required PR-head statuses, a maintainer adds it to the merge queue. GitHub creates a temporary merge-group branch that combines the latest `main`, the queued PR, and any earlier queued PRs. The same required `OpenShell / ...` status contexts are then published against the merge-group SHA before GitHub merges it.
 
 ### Protobuf API compatibility

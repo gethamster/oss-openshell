@@ -7293,6 +7293,7 @@ mod tests {
                 "codex",
                 "copilot",
                 "cursor",
+                "cursor-subscription",
                 "deepinfra",
                 "github",
                 "google-cloud",

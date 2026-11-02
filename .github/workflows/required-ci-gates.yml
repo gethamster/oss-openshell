@@ -1,6 +1,12 @@
 name: Required CI Gates
 
 on:
+  workflow_dispatch:
+    inputs:
+      pull-request:
+        description: Open pull request whose current head must be verified
+        required: true
+        type: string
   merge_group:
     types: [checks_requested]
   pull_request_target:
@@ -27,10 +33,17 @@ jobs:
     name: Publish required CI gate statuses
     runs-on: oss-linux-small
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test CI evidence validation
+        run: python3 tasks/scripts/test_required_ci_gates.py
       - name: Evaluate required CI gates
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
+          FORK_NATIVE_CI: ${{ github.repository == 'gethamster/oss-openshell' }}
+          DISPATCH_PR_NUMBER: ${{ inputs.pull-request }}
           EVENT_NAME: ${{ github.event_name }}
           PR_NUMBER_FROM_EVENT: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA_FROM_EVENT: ${{ github.event.pull_request.head.sha }}
@@ -72,6 +85,15 @@ jobs:
             jq -e --arg label "$label" 'index($label) != null' <<< "$LABELS_JSON" >/dev/null
           }
 
+          configure_pr_source() {
+            if [ "$FORK_NATIVE_CI" = "true" ]; then
+              WORKFLOW_EVENT="workflow_dispatch"
+              # A maintainer may admit an external PR through a local branch.
+              # Its exact commit and dispatcher's access are verified below.
+              EXPECTED_HEAD_BRANCH=""
+            fi
+          }
+
           resolve_pull_request_event() {
             CONTEXT_KIND="pull_request"
             WORKFLOW_EVENT="push"
@@ -81,6 +103,7 @@ jobs:
             MIRROR_REF="pull-request/$PR_NUMBER"
             EXPECTED_HEAD_BRANCH="$MIRROR_REF"
             STATUS_TARGET_URL="https://github.com/$GH_REPO/pull/$PR_NUMBER"
+            configure_pr_source
           }
 
           load_pr_context() {
@@ -101,6 +124,7 @@ jobs:
             MIRROR_REF="pull-request/$PR_NUMBER"
             EXPECTED_HEAD_BRANCH="$MIRROR_REF"
             STATUS_TARGET_URL="https://github.com/$GH_REPO/pull/$PR_NUMBER"
+            configure_pr_source
           }
 
           resolve_merge_group_event() {
@@ -127,7 +151,8 @@ jobs:
               return
             fi
 
-            if [ "$WORKFLOW_RUN_EVENT" != "push" ]; then
+            if [ "$WORKFLOW_RUN_EVENT" != "push" ] &&
+               { [ "$FORK_NATIVE_CI" != "true" ] || [ "$WORKFLOW_RUN_EVENT" != "workflow_dispatch" ]; }; then
               echo "Ignoring workflow_run from event '$WORKFLOW_RUN_EVENT'."
               exit 0
             fi
@@ -139,13 +164,17 @@ jobs:
 
             local associated_prs pr
             associated_prs=$(gh api "repos/$GH_REPO/commits/$WORKFLOW_RUN_HEAD_SHA/pulls")
-            pr=$(jq -c 'map(select(.state == "open"))[0] // empty' <<< "$associated_prs")
+            pr=$(jq -c --arg sha "$WORKFLOW_RUN_HEAD_SHA" 'map(select(.state == "open" and .head.sha == $sha))[0] // empty' <<< "$associated_prs")
             if [ -z "$pr" ]; then
               echo "No open PR associated with $WORKFLOW_RUN_HEAD_SHA; nothing to publish."
               exit 0
             fi
 
             load_pr_context "$(jq -r '.number' <<< "$pr")"
+            if [ "$HEAD_SHA" != "$WORKFLOW_RUN_HEAD_SHA" ]; then
+              echo "PR head changed after this workflow run; ignoring stale evidence."
+              exit 0
+            fi
           }
 
           resolve_context() {
@@ -155,6 +184,12 @@ jobs:
               resolve_merge_group_event
             elif [ "$EVENT_NAME" = "workflow_run" ]; then
               resolve_workflow_run_event
+            elif [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$FORK_NATIVE_CI" = "true" ]; then
+              if [[ ! "$DISPATCH_PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+                echo "A positive pull request number is required." >&2
+                exit 1
+              fi
+              load_pr_context "$DISPATCH_PR_NUMBER"
             else
               echo "Unsupported event '$EVENT_NAME'."
               exit 1
@@ -167,7 +202,7 @@ jobs:
             local context="$1"
             local mirror_sha
 
-            if [ "$CONTEXT_KIND" = "merge_group" ]; then
+            if [ "$CONTEXT_KIND" = "merge_group" ] || [ "$FORK_NATIVE_CI" = "true" ]; then
               return 0
             fi
 
@@ -203,7 +238,10 @@ jobs:
             fi
 
             local runs latest run_id status conclusion run_url real_success
-            runs=$(gh api "repos/$GH_REPO/actions/workflows/$workflow_file/runs?head_sha=$HEAD_SHA&event=$WORKFLOW_EVENT" --jq '.workflow_runs')
+            runs=$(gh api --paginate "repos/$GH_REPO/actions/workflows/$workflow_file/runs?head_sha=$HEAD_SHA&event=$WORKFLOW_EVENT&per_page=100" --jq '.workflow_runs' | jq -s 'add')
+            if [ "$CONTEXT_KIND" = "pull_request" ] && [ "$FORK_NATIVE_CI" = "true" ]; then
+              runs=$(jq --arg sha "$HEAD_SHA" --arg repo "$GH_REPO" '[.[] | select(.event == "workflow_dispatch" and .head_sha == $sha and .head_repository.full_name == $repo)]' <<< "$runs")
+            fi
             if [ -n "${EXPECTED_HEAD_BRANCH:-}" ]; then
               latest=$(jq -c --arg branch "$EXPECTED_HEAD_BRANCH" '[.[] | select(.head_branch == $branch)] | sort_by(.created_at) | reverse | .[0] // empty' <<< "$runs")
             else
@@ -219,6 +257,23 @@ jobs:
             status=$(jq -r '.status' <<< "$latest")
             conclusion=$(jq -r '.conclusion' <<< "$latest")
             run_url=$(jq -r '.html_url' <<< "$latest")
+
+            if [ "$CONTEXT_KIND" = "pull_request" ] && [ "$FORK_NATIVE_CI" = "true" ]; then
+              local actor permission
+              actor=$(jq -r '.triggering_actor.login // .actor.login // empty' <<< "$latest")
+              if [[ ! "$actor" =~ ^[A-Za-z0-9-]+$ ]]; then
+                post_status "$context" failure "CI dispatcher is not a repository maintainer" "$run_url"
+                return 0
+              fi
+              permission=$(gh api "repos/$GH_REPO/collaborators/$actor/permission" --jq '.permission' 2>/dev/null || true)
+              case "$permission" in
+                admin|maintain|write) ;;
+                *)
+                  post_status "$context" failure "CI dispatcher requires repository write access" "$run_url"
+                  return 0
+                  ;;
+              esac
+            fi
 
             if [ "$status" != "completed" ]; then
               post_status "$context" pending "$workflow_name is $status" "$run_url"

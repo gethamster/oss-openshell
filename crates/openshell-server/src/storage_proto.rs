@@ -177,10 +177,12 @@ mod tests {
     // selections absent; storage.v1 remains frozen. Public field 3 retains its
     // image wire identity, now with explicit presence. Compute configuration
     // updates use a separate capability/service and add one classified RPC.
+    // Cursor API-key exchange adds refresh strategy value 7 to the shared enum.
+    // Existing strategy values and frozen storage.v1 payloads are unchanged.
     const PUBLIC_RPC_SCHEMA_SHA256: &str =
-        "be99bb3fcc7894eb85d774f54b642173e70dd37bc8e5fcaf3fdff2454ae689e1";
+        "13188f5476901bff55a76feee55c5b4850fb5deb8e480c3853a6296a36925d81";
     const DURABLE_SCHEMA_SHA256: &str =
-        "cb15f8f79a855064a43fe8c6cd908bf07eca6604e2bf8ab7d2de0ef33e97da4e";
+        "e687f684aa1b97e779784b0be31e43f82c2fff5f6d127947b6f866b4ccae1654";
     const PUBLIC_DURABLE_OVERLAP_SHA256: &str =
         "c0c3ea17f105aaa6d843c466fd4240451c2105dce7675384935d4aaecdac8abf";
     // Encoded with the schema that omitted stable_placeholder. Keep these

@@ -6,27 +6,20 @@ use super::*;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-fn frames() -> (
-    mpsc::Sender<Result<TcpForwardFrame, Status>>,
-    ReceiverStream<Result<TcpForwardFrame, Status>>,
-) {
-    let (sender, receiver) = mpsc::channel(8);
-    (sender, ReceiverStream::new(receiver))
-}
-
-fn data(bytes: &[u8]) -> Result<TcpForwardFrame, Status> {
-    Ok(TcpForwardFrame {
+fn data(bytes: &[u8]) -> TcpForwardFrame {
+    TcpForwardFrame {
         payload: Some(openshell_core::proto::tcp_forward_frame::Payload::Data(
             bytes.to_vec(),
         )),
-    })
+    }
 }
 
 #[tokio::test]
 async fn cancelled_client_ends_bridge_while_sandbox_side_is_idle() {
     // The sandbox side stays open and silent, like a keep-alive HTTP server.
     let (relay, _sandbox_side) = tokio::io::duplex(1024);
-    let (client_frames, inbound) = frames();
+    let (client_frames, inbound) = mpsc::channel(8);
+    let inbound = ReceiverStream::new(inbound);
     let (tx, rx) = mpsc::channel(8);
     let bridge = tokio::spawn(async move {
         bridge_forward_tcp_stream(inbound, relay, tx, "sandbox", "channel").await;
@@ -42,12 +35,13 @@ async fn cancelled_client_ends_bridge_while_sandbox_side_is_idle() {
 #[tokio::test]
 async fn bridge_relays_both_directions_until_the_sandbox_closes() {
     let (relay, mut sandbox_side) = tokio::io::duplex(1024);
-    let (client_frames, inbound) = frames();
+    let (client_frames, inbound) = mpsc::channel(8);
+    let inbound = ReceiverStream::new(inbound);
     let (tx, mut rx) = mpsc::channel(8);
     let bridge = tokio::spawn(async move {
         bridge_forward_tcp_stream(inbound, relay, tx, "sandbox", "channel").await;
     });
-    client_frames.send(data(b"ping")).await.unwrap();
+    client_frames.send(Ok(data(b"ping"))).await.unwrap();
     let mut request = [0u8; 4];
     sandbox_side.read_exact(&mut request).await.unwrap();
     assert_eq!(&request, b"ping");

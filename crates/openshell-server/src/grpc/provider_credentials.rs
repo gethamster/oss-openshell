@@ -390,13 +390,7 @@ async fn retrieve(
 fn ensure_refreshable(refresh: &StoredProviderCredentialRefreshStateV2) -> Result<(), Status> {
     let strategy = ProviderCredentialRefreshStrategy::try_from(refresh.strategy)
         .unwrap_or(ProviderCredentialRefreshStrategy::Unspecified);
-    if !matches!(
-        strategy,
-        ProviderCredentialRefreshStrategy::Oauth2RefreshToken
-            | ProviderCredentialRefreshStrategy::Oauth2ClientCredentials
-            | ProviderCredentialRefreshStrategy::GoogleServiceAccountJwt
-            | ProviderCredentialRefreshStrategy::AwsStsAssumeRole
-    ) {
+    if !crate::provider_refresh::is_gateway_mintable_strategy(strategy) {
         return Err(Status::failed_precondition(
             "credential has no gateway-managed minting strategy",
         ));

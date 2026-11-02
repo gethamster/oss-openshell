@@ -35,6 +35,8 @@ const REFRESH_ERROR_RETRY_SECONDS: i64 = 60;
 const REFRESH_CONFIGURATION_RETRY_SECONDS: i64 = 60 * 60;
 const MAX_OAUTH_ERROR_RESPONSE_BYTES: usize = 8 * 1024;
 
+mod cursor;
+
 pub fn refresh_material_scope(
     state: &StoredProviderCredentialRefreshState,
 ) -> RefreshMaterialScope<'_> {
@@ -660,6 +662,7 @@ pub fn refresh_strategy_name(strategy: i32) -> &'static str {
         ProviderCredentialRefreshStrategy::Oauth2ClientCredentials => "oauth2_client_credentials",
         ProviderCredentialRefreshStrategy::GoogleServiceAccountJwt => "google_service_account_jwt",
         ProviderCredentialRefreshStrategy::AwsStsAssumeRole => "aws_sts_assume_role",
+        ProviderCredentialRefreshStrategy::CursorApiKeyExchange => "cursor_api_key_exchange",
         ProviderCredentialRefreshStrategy::Unspecified => "unspecified",
     }
 }
@@ -676,6 +679,7 @@ pub fn strategy_secret_material_keys(
             &["refresh_token", "client_secret"]
         }
         ProviderCredentialRefreshStrategy::Oauth2ClientCredentials => &["client_secret"],
+        ProviderCredentialRefreshStrategy::CursorApiKeyExchange => &["api_key"],
         ProviderCredentialRefreshStrategy::GoogleServiceAccountJwt => &["private_key"],
         ProviderCredentialRefreshStrategy::AwsStsAssumeRole => {
             &["aws_secret_access_key", "aws_session_token"]
@@ -1652,6 +1656,7 @@ async fn mint_credential(
         ProviderCredentialRefreshStrategy::AwsStsAssumeRole => {
             mint_aws_sts_assume_role(state).await
         }
+        ProviderCredentialRefreshStrategy::CursorApiKeyExchange => cursor::mint(state).await,
         ProviderCredentialRefreshStrategy::External
         | ProviderCredentialRefreshStrategy::Static
         | ProviderCredentialRefreshStrategy::Unspecified => Err(Status::failed_precondition(
@@ -3383,6 +3388,94 @@ mod tests {
                 .credentials
                 .contains_key("MS_GRAPH_ACCESS_TOKEN")
         );
+    }
+
+    #[tokio::test]
+    async fn cursor_api_key_exchange_keeps_material_and_rotated_tokens_in_credential_storage() {
+        use base64::Engine as _;
+        let mock_server = MockServer::start().await;
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::json!({"exp":current_time_ms()/1000+3600}).to_string());
+        let access_token = format!("e30.{payload}.signature");
+        Mock::given(method("POST"))
+            .and(path("/auth/exchange_user_api_key"))
+            .and(header("authorization", "Bearer secret-cursor-api-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "accessToken":access_token,"refreshToken":"unused-cursor-refresh"
+            })))
+            .expect(2)
+            .mount(&mock_server)
+            .await;
+        let store = test_store().await;
+        let provider = provider("cursor-user", "cursor-subscription");
+        store.put_message(&provider).await.unwrap();
+        let credentials = test_credentials();
+        let mut state = new_refresh_state(
+            &provider,
+            "default",
+            "CURSOR_AUTH_TOKEN",
+            NewRefreshStateConfig {
+                strategy: ProviderCredentialRefreshStrategy::CursorApiKeyExchange,
+                material: HashMap::new(),
+                secret_material_keys: vec!["api_key".into()],
+                expires_at_ms: 0,
+                token_url: format!("{}/auth/exchange_user_api_key", mock_server.uri()),
+                scopes: Vec::new(),
+                refresh_before: Some(proto_duration(30)),
+                max_lifetime: Some(proto_duration(60)),
+                additional_output_keys: HashMap::new(),
+            },
+        )
+        .unwrap();
+        state.secret_material_handles = credentials
+            .store_refresh_material_with_object_id(
+                refresh_material_scope(&state),
+                state.object_id(),
+                &HashMap::from([("api_key".into(), "secret-cursor-api-key".into())]),
+                &HashMap::new(),
+            )
+            .await
+            .unwrap();
+        put_refresh_state(&store, &state).await.unwrap();
+        for _ in 0..2 {
+            let refreshed = refresh_provider_credential(
+                &store,
+                "default",
+                &credentials,
+                None,
+                "cursor-user",
+                "CURSOR_AUTH_TOKEN",
+            )
+            .await
+            .unwrap();
+            assert_eq!(refreshed.status, "refreshed");
+            let stored = store
+                .get_message_by_name::<Provider>("default", "cursor-user")
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(stored.credentials.is_empty());
+            assert!(stored.credential_handles.contains_key("CURSOR_AUTH_TOKEN"));
+            let refresh =
+                get_refresh_state(&store, "default", provider.object_id(), "CURSOR_AUTH_TOKEN")
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert!(refresh.material.is_empty());
+            assert_eq!(refresh.secret_material_handles.len(), 1);
+            assert!(refresh.secret_material_handles.contains_key("api_key"));
+            assert_eq!(
+                credentials
+                    .resolve_refresh_material(
+                        refresh_material_scope(&refresh),
+                        &refresh.secret_material_handles,
+                    )
+                    .await
+                    .unwrap()["api_key"],
+                "secret-cursor-api-key"
+            );
+            assert_eq!(credentials.stored_credential_count(), Some(2));
+        }
     }
 
     #[tokio::test]
