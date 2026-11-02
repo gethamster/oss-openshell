@@ -145,7 +145,6 @@ jobs:
       source-sha: ${{ needs.build.outputs.source_sha }}
       is-prerelease: true
     secrets:
-      CODEX_SECURITY_API_KEY: ${{ secrets.CODEX_SECURITY_API_KEY }}
       CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
   notify-prerelease-success:
