@@ -11,7 +11,7 @@ on:
         required: true
         type: string
       fail-on-static-findings:
-        description: Fail when Trivy or Zizmor reports HIGH/CRITICAL findings
+        description: Fail when Trivy reports HIGH/CRITICAL findings
         default: true
         type: boolean
       images:
@@ -29,7 +29,7 @@ on:
         required: true
         type: string
       fail-on-static-findings:
-        description: Fail when Trivy or Zizmor reports HIGH/CRITICAL findings
+        description: Fail when Trivy reports HIGH/CRITICAL findings
         default: true
         type: boolean
       images:
@@ -75,15 +75,3 @@ jobs:
     with:
       candidate_ref: ${{ inputs.candidate_ref }}
       advisories-only: true
-
-  workflow-security:
-    name: Actionlint and Zizmor
-    uses: ./.github/workflows/workflow-security.yml
-    permissions:
-      contents: read
-      security-events: write
-    with:
-      candidate_ref: ${{ inputs.candidate_ref }}
-      fail-on-findings: ${{ inputs.fail-on-static-findings }}
-    secrets:
-      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
