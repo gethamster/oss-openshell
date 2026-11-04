@@ -4,6 +4,7 @@
 package gateway
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -197,6 +198,57 @@ func TestDiskTokenSource_ExpiredToken(t *testing.T) {
 	assert.ErrorIs(t, err, ErrTokenLoad)
 	assert.Contains(t, err.Error(), "expired")
 	assert.Contains(t, err.Error(), "re-authenticate")
+}
+
+func TestDiskTokenSource_RustBundleExpiresAt(t *testing.T) {
+	dir := t.TempDir()
+	expiresAt := time.Now().Add(-time.Hour).Unix()
+	writeFile(t, dir, oidcTokenFile, fmt.Sprintf(`{
+		"access_token": "rust-access",
+		"refresh_token": "rust-refresh",
+		"expires_at": %d,
+		"issuer": "https://issuer.example.com",
+		"client_id": "client-abc"
+	}`, expiresAt))
+
+	src := newDiskTokenSource(dir)
+	_, err := src.Token()
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrTokenLoad)
+	assert.Contains(t, err.Error(), "expired")
+}
+
+func TestDiskTokenSource_RustBundleExpiresAtSetsExpiry(t *testing.T) {
+	dir := t.TempDir()
+	expiresAt := time.Now().Add(time.Hour).Unix()
+	writeFile(t, dir, oidcTokenFile, fmt.Sprintf(`{
+		"access_token": "rust-access",
+		"expires_at": %d,
+		"issuer": "https://issuer.example.com",
+		"client_id": "client-abc"
+	}`, expiresAt))
+
+	src := newDiskTokenSource(dir)
+	tok, err := src.Token()
+	require.NoError(t, err)
+	assert.Equal(t, expiresAt, tok.Expiry.Unix())
+}
+
+func TestDiskTokenSource_ExpiresAtTakesPrecedenceOverExpiry(t *testing.T) {
+	dir := t.TempDir()
+	expiresAt := time.Now().Add(time.Hour).Unix()
+	writeFile(t, dir, oidcTokenFile, fmt.Sprintf(`{
+		"access_token": "access",
+		"expires_at": %d,
+		"expiry": %q,
+		"issuer": "https://issuer.example.com",
+		"client_id": "client-abc"
+	}`, expiresAt, time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)))
+
+	src := newDiskTokenSource(dir)
+	tok, err := src.Token()
+	require.NoError(t, err)
+	assert.Equal(t, expiresAt, tok.Expiry.Unix())
 }
 
 func TestDiskTokenSource_MissingFile(t *testing.T) {
