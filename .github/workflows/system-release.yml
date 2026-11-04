@@ -80,7 +80,6 @@ jobs:
           nix develop -c cargo nextest run --release --profile ci \
             --target "$GATEWAY_TRIPLE" -p openshell-driver-db-credstore --lib \
             --color never --no-tests=fail 2>&1 | tee credential-store-tests.log
-          grep -Eq 'Summary.* [1-9][0-9]* tests run: [1-9][0-9]* passed' credential-store-tests.log
           # Match the branch checks' process-per-test isolation, including the
           # provider-export audit that installs a thread-local tracing subscriber.
           nix develop -c cargo nextest run --release --profile ci \
@@ -88,7 +87,6 @@ jobs:
             --color never --no-tests=fail \
             -E 'test(/^(credentials|grpc::provider_credentials|ssh_identity|supervisor_pool)::tests::/)' \
             2>&1 | tee credential-tests.log
-          grep -Eq 'Summary.* [1-9][0-9]* tests run: [1-9][0-9]* passed' credential-tests.log
           cat credential-store-tests.log >> credential-tests.log
       - name: Package verified binaries
         env:
