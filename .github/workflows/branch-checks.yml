@@ -7,6 +7,14 @@ on:
     branches:
       - "pull-request/[0-9]+"
   workflow_dispatch:
+    inputs:
+      macos_runner:
+        description: Arm64 macOS runner pool for manual verification
+        type: choice
+        default: macos-15-xlarge
+        options:
+          - macos-15-xlarge
+          - macos-15
 
 env:
   CARGO_TERM_COLOR: always
@@ -200,7 +208,7 @@ jobs:
             system: x86_64-linux
           - runner: oss-ubuntu24-arm64
             system: aarch64-linux
-          - runner: macos-15-xlarge
+          - runner: ${{ inputs.macos_runner || 'macos-15-xlarge' }}
             system: aarch64-darwin
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -244,7 +252,7 @@ jobs:
             system: x86_64-linux
           - runner: oss-ubuntu24-arm64
             system: aarch64-linux
-          - runner: macos-15-xlarge
+          - runner: ${{ inputs.macos_runner || 'macos-15-xlarge' }}
             system: aarch64-darwin
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -363,7 +371,7 @@ jobs:
             system: x86_64-linux
           - runner: oss-ubuntu24-arm64
             system: aarch64-linux
-          - runner: macos-15-xlarge
+          - runner: ${{ inputs.macos_runner || 'macos-15-xlarge' }}
             system: aarch64-darwin
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
