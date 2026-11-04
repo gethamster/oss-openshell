@@ -1,9 +1,6 @@
 # No wildcard rule. Explicit ownership covers the retained CI machinery.
 # Explicit ownership below protects the review and CI machinery.
 
-## Vouch list — maintainers only (bot commits bypass, but manual edits need review)
-.github/VOUCHED.td @NVIDIA/openshell-codeowners
-
 ## Merge enforcement — these paths decide who can merge, so they notify the full
 # list of maintainers to raise scrutiny on changes here.
 #
@@ -24,10 +21,8 @@
 /.github/CODEOWNERS @NVIDIA/openshell-codeowners @mrunalp @sjenning @derekwaynecarr
 /.github/zizmor.yml @NVIDIA/openshell-codeowners @mrunalp @sjenning @derekwaynecarr
 
-# `MAINTAINERS.md` maintainer approval checks
+# Maintainer list
 /MAINTAINERS.md @NVIDIA/openshell-codeowners @mrunalp @sjenning @derekwaynecarr
-
-# PR issue acceptance checks
 
 # Auditable SBOM check
 /tasks/scripts/verify-image-sbom.sh @NVIDIA/openshell-codeowners @mrunalp @sjenning @derekwaynecarr

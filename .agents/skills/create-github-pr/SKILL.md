@@ -13,29 +13,9 @@ Create pull requests on GitHub using the `gh` CLI.
 
 - The `gh` CLI must be authenticated (`gh auth status`)
 - You must have commits on a branch that's pushed to the remote
-- Every PR must close an existing issue, except automated dependency updates and build or flaky-test fixes from authors with write access, as described in `CONTRIBUTING.md`. Follow Branch Names in `CONTRIBUTING.md` for contributor branch names.
+- Link an existing issue when it provides useful context. Do not create an issue solely to permit an authorized pull request.
 
 ## Before Creating a PR
-
-### Verify Contributor Access and Issue Acceptance
-
-Before pushing or creating a PR (including a draft), verify the author's access
-to the target repository, not their fork. For the authenticated `gh` user:
-
-```bash
-gh repo view OWNER/REPO --json nameWithOwner,viewerPermission
-gh issue view ISSUE_NUMBER --repo OWNER/REPO --json number,url,labels
-```
-
-Authors with verified `WRITE`, `MAINTAIN`, or `ADMIN` access may proceed without
-`state:accepted`; keep the issue link and note the missing label. Everyone else
-must link at least one target-repository issue and have `state:accepted` on each.
-Otherwise, preserve local work and report which issue needs acceptance. A direct
-request, roadmap placement, other labels, or vouch status does not bypass this gate.
-
-When acting for another author, verify their permissions. Resolve failed lookups
-before proceeding; retry sandbox network failures outside the sandbox before
-reporting an authentication problem. Vouch requirements still apply separately.
 
 ### Check Config Documentation
 
@@ -48,7 +28,7 @@ deployment docs.
 
 ### Check Agent Infrastructure
 
-Use the `sync-agent-infra` skill's maintenance map to identify related skill updates when the branch changes behavior, commands, or development workflows. Run its full consistency check when the branch adds, removes, or renames skills or crates; changes workflow relationships or skill coverage; modifies issue or PR templates; or changes agent cross-references. Resolve any drift before creating the PR.
+Update the directly affected command, workflow, and skill references when behavior changes. Do not add a full consistency run or recursive review solely because guidance changed.
 
 ### Verify the Affected Areas
 
@@ -144,7 +124,7 @@ Closes #123
 - Return 400 instead of 500"
 ```
 
-If the work needs multiple PRs, create a separate closable issue for each PR. A higher-level tracking issue may link the component issues, but no PR should close that tracking issue until all its work is complete. Follow `SECURITY.md` for vulnerability disclosure. First-time external contributors must be vouched before their PRs are accepted; the vouch check may close unvouched PRs. Check the current vouch process before opening a PR for an external contributor.
+Keep each PR coherent and link relevant existing issues. Follow `SECURITY.md` for vulnerability disclosure.
 
 ### Create as Draft
 
@@ -248,9 +228,6 @@ EOF
 ## After Creating
 
 The command outputs the PR URL and number.
-
-Rerun `PR Issue Acceptance` after linked issue labels change; it does not refresh
-automatically on issue-label events.
 
 **Display the URL using markdown link syntax** so it's easily clickable:
 
