@@ -4552,7 +4552,6 @@ name = "openshell-driver-kubernetes"
 version = "0.0.0"
 dependencies = [
  "bytes",
- "chrono",
  "clap",
  "futures",
  "http 1.4.0",

@@ -137,15 +137,19 @@ fn capacity(spec: &Value) -> Result<(i64, i64)> {
                 .ok_or("CPU overflow")?
         };
         let memory = req["memory"].as_str().ok_or("missing memory request")?;
-        let (value, scale) = if let Some(v) = memory.strip_suffix("Gi") {
-            (v, 1_i64 << 30)
-        } else if let Some(v) = memory.strip_suffix("Mi") {
-            (v, 1_i64 << 20)
-        } else if let Some(v) = memory.strip_suffix("Ki") {
-            (v, 1_i64 << 10)
-        } else {
-            (memory, 1)
-        };
+        let (value, scale) = memory.strip_suffix("Gi").map_or_else(
+            || {
+                memory.strip_suffix("Mi").map_or_else(
+                    || {
+                        memory
+                            .strip_suffix("Ki")
+                            .map_or((memory, 1), |v| (v, 1_i64 << 10))
+                    },
+                    |v| (v, 1_i64 << 20),
+                )
+            },
+            |v| (v, 1_i64 << 30),
+        );
         let memory = value
             .parse::<i64>()
             .map_err(|_| "invalid memory request")?
@@ -172,12 +176,7 @@ fn capacity(spec: &Value) -> Result<(i64, i64)> {
     Ok((cpu, memory))
 }
 
-pub(crate) async fn reserve(
-    workspace: &str,
-    sandbox: &str,
-    generation: &str,
-    spec: &Value,
-) -> Result<()> {
+pub async fn reserve(workspace: &str, sandbox: &str, generation: &str, spec: &Value) -> Result<()> {
     let Some(billing) = Billing::load()? else {
         return Ok(());
     };
@@ -195,7 +194,7 @@ pub(crate) async fn reserve(
     Ok(())
 }
 
-pub(crate) async fn observe(client: Client, object: &DynamicObject) -> Result<()> {
+pub async fn observe(client: Client, object: &DynamicObject) -> Result<()> {
     let Some(billing) = Billing::load()? else {
         return Ok(());
     };
@@ -216,7 +215,7 @@ pub(crate) async fn observe(client: Client, object: &DynamicObject) -> Result<()
         return Ok(());
     };
     if billing.path(generation, "settled").exists() {
-        return Ok(());
+        return Err("a released generation requires a fresh start".into());
     }
     let path = billing.path(generation, "enrolled");
     if !path.exists() {
@@ -243,7 +242,7 @@ pub(crate) async fn observe(client: Client, object: &DynamicObject) -> Result<()
         .as_deref()
         .ok_or("missing namespace")?;
     let pod_name = annotations
-        .get("openshell.ai/sandbox-pod-name")
+        .get("agents.x-k8s.io/pod-name")
         .map(String::as_str)
         .or(object.metadata.name.as_deref())
         .ok_or("missing workload name")?;
@@ -290,7 +289,7 @@ pub(crate) async fn observe(client: Client, object: &DynamicObject) -> Result<()
         return Err("allocation differs from admitted capacity".into());
     }
     value["allocatedAt"] = json!(at.0.to_rfc3339());
-    value["observedAt"] = json!(chrono::Utc::now().to_rfc3339());
+    value["observedAt"] = json!(k8s_openapi::chrono::Utc::now().to_rfc3339());
     value["releasedAt"] = Value::Null;
     billing.save(generation, "json", &value)?;
     billing
@@ -299,7 +298,7 @@ pub(crate) async fn observe(client: Client, object: &DynamicObject) -> Result<()
     billing.post("/api/internal/billing/sandbox-reservations",&json!({"resourceId":value["resourceId"],"generation":value["generation"],"cpuMillis":cpu,"memoryBytes":memory})).await?;
     Ok(())
 }
-pub(crate) async fn release(generation: &str) -> Result<()> {
+pub async fn release(generation: &str) -> Result<()> {
     let Some(billing) = Billing::load()? else {
         return Ok(());
     };
@@ -310,7 +309,7 @@ pub(crate) async fn release(generation: &str) -> Result<()> {
     let mut value: Value = serde_json::from_slice(&fs::read(&path).map_err(|_| "missing receipt")?)
         .map_err(|_| "invalid receipt")?;
     if value["releasedAt"].is_null() {
-        let now = json!(chrono::Utc::now().to_rfc3339());
+        let now = json!(k8s_openapi::chrono::Utc::now().to_rfc3339());
         value["releasedAt"] = now.clone();
         value["observedAt"] = now;
         billing.save(generation, "json", &value)?;
@@ -324,7 +323,7 @@ pub(crate) async fn release(generation: &str) -> Result<()> {
 }
 
 /// Drain terminal receipts even after the Sandbox resource has been deleted.
-pub(crate) async fn reconcile_missing(client: Client) -> Result<()> {
+pub async fn reconcile_missing(client: Client) -> Result<()> {
     let Some(billing) = Billing::load()? else {
         return Ok(());
     };
