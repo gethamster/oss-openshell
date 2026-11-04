@@ -10014,7 +10014,8 @@ mod tests {
             &config,
             runtime.store.clone(),
         )
-        .unwrap();
+        .unwrap()
+        .with_test_internal_store();
         runtime.configure_ssh_identities(credentials.clone());
         credentials
     }
