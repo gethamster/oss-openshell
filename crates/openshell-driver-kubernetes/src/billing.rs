@@ -1,4 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 Hamster
 // SPDX-License-Identifier: Apache-2.0
+
 //! Opt-in hosted billing at the trusted Kubernetes allocation boundary.
 use k8s_openapi::api::core::v1::Pod;
 use kube::{Api, Client, api::DynamicObject};
