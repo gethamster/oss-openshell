@@ -2267,15 +2267,18 @@ impl PostgresStore {
         }
     }
 
-    /// Test support only: a `PostgreSQL` URL on a loopback port where nothing
-    /// listens, so every connection attempt is refused.
-    pub(crate) async fn refusing_url_for_tests() -> String {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
+    /// Keep a loopback port bound without listening, so connection attempts are
+    /// refused and parallel fixtures cannot claim the address before the test ends.
+    pub(crate) fn refusing_endpoint_for_tests() -> (String, tokio::net::TcpSocket) {
+        let socket = tokio::net::TcpSocket::new_v4().expect("create a loopback socket");
+        socket
+            .bind(([127, 0, 0, 1], 0).into())
             .expect("reserve a loopback port");
-        let port = listener.local_addr().expect("loopback address").port();
-        drop(listener);
-        format!("postgres://openshell@127.0.0.1:{port}/openshell")
+        let port = socket.local_addr().expect("loopback address").port();
+        (
+            format!("postgres://openshell@127.0.0.1:{port}/openshell"),
+            socket,
+        )
     }
 }
 
@@ -2285,10 +2288,8 @@ mod tests {
 
     #[tokio::test]
     async fn lock_connection_timeout_is_contention_only_if_the_pool_filled_during_the_wait() {
-        let store = PostgresStore::connect_lazy_for_tests(
-            &PostgresStore::refusing_url_for_tests().await,
-            2,
-        );
+        let (url, _endpoint) = PostgresStore::refusing_endpoint_for_tests();
+        let store = PostgresStore::connect_lazy_for_tests(&url, 2);
         let usage = &store.lock_usage;
         let is_contention = |error: PersistenceError| match error {
             PersistenceError::LockTimeout(detail) => {
@@ -2331,10 +2332,8 @@ mod tests {
     async fn lock_connection_checkout_tracks_the_in_use_gauge() {
         const IN_USE: &str = "openshell_server_mutation_lock_connections_in_use";
         let metrics = crate::gateway_metrics::MetricsCapture::install();
-        let store = PostgresStore::connect_lazy_for_tests(
-            &PostgresStore::refusing_url_for_tests().await,
-            2,
-        );
+        let (url, _endpoint) = PostgresStore::refusing_endpoint_for_tests();
+        let store = PostgresStore::connect_lazy_for_tests(&url, 2);
         let usage = &store.lock_usage;
 
         let first = LockConnectionCheckout::new(usage);
@@ -2358,10 +2357,8 @@ mod tests {
 
     #[tokio::test]
     async fn lock_connection_timeout_without_time_to_connect_is_a_lock_timeout() {
-        let store = PostgresStore::connect_lazy_for_tests(
-            &PostgresStore::refusing_url_for_tests().await,
-            1,
-        );
+        let (url, _endpoint) = PostgresStore::refusing_endpoint_for_tests();
+        let store = PostgresStore::connect_lazy_for_tests(&url, 1);
         // The pool never fills, but an earlier wait left too little time to
         // open a connection.
         let start = store.lock_usage.snapshot();
@@ -2388,10 +2385,8 @@ mod tests {
 
     #[tokio::test]
     async fn refused_lock_connection_is_a_database_error_not_a_lock_timeout() {
-        let store = PostgresStore::connect_lazy_for_tests(
-            &PostgresStore::refusing_url_for_tests().await,
-            1,
-        );
+        let (url, _endpoint) = PostgresStore::refusing_endpoint_for_tests();
+        let store = PostgresStore::connect_lazy_for_tests(&url, 1);
         // SQLx retries a refused connection until the deadline, which leaves
         // ample time to open one.
         let deadline =
