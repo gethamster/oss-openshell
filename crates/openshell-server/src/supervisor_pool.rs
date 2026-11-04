@@ -1354,15 +1354,17 @@ impl SupervisorPool {
         let value = std::str::from_utf8(material)
             .map_err(|_| "sandbox instance launch material is not UTF-8".to_string())?;
         let (name, workspace, owner_id) = material_owner(payload);
-        let handles = self
-            .credentials
-            .store_provider_credentials_with_object_id(
-                &name,
-                workspace,
-                owner_id,
-                &Uuid::new_v4().to_string(),
-                &HashMap::from([(LAUNCH_MATERIAL_KEY.to_string(), value.to_string())]),
-                &HashMap::new(),
+        self.credentials
+            .store_internal_credential(
+                openshell_core::proto::credentials::v1::StoreCredentialRequest {
+                    provider: name,
+                    workspace: workspace.to_string(),
+                    provider_id: owner_id.to_string(),
+                    object_id: Uuid::new_v4().to_string(),
+                    credential_key: LAUNCH_MATERIAL_KEY.to_string(),
+                    value: value.to_string(),
+                    existing_handle: None,
+                },
             )
             .await
             .map_err(|status| {
@@ -1370,11 +1372,7 @@ impl SupervisorPool {
                     "store sandbox instance launch material: {}",
                     status.message()
                 )
-            })?;
-        handles
-            .get(LAUNCH_MATERIAL_KEY)
-            .cloned()
-            .ok_or_else(|| "the credential store kept no launch material".to_string())
+            })
     }
 
     async fn load_material(&self, payload: &AssignmentPayload) -> Result<Vec<u8>, String> {
@@ -2902,7 +2900,8 @@ mod tests {
                 .with_default_credential_driver(Some("test-static"));
             Self {
                 credentials: CredentialRuntime::from_config_with_store(&config, store.clone())
-                    .expect("credential runtime"),
+                    .expect("credential runtime")
+                    .with_test_internal_store(),
                 store,
                 authority: Arc::new(
                     SandboxSessionJwtAuthority::from_pem(

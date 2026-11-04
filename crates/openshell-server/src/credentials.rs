@@ -320,6 +320,37 @@ impl CredentialRuntime {
             .expect("test credential driver supports resolve gating")
     }
 
+    /// Store gateway-internal SSH or launch material in the encrypted database.
+    /// Provider credentials and refresh material retain their configured driver.
+    pub(crate) async fn store_internal_credential(
+        &self,
+        request: StoreCredentialRequest,
+    ) -> Result<CredentialHandle, Status> {
+        let mut handle = self
+            .connected_driver(DbCredstoreCredentialDriver::NAME)?
+            .store_credential(request)
+            .await?;
+        if handle.handle.trim().is_empty() {
+            return Err(Status::internal(
+                "internal credential store returned an empty handle",
+            ));
+        }
+        handle.driver = DbCredstoreCredentialDriver::NAME.to_string();
+        Ok(handle)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_internal_store(mut self) -> Self {
+        let driver = self
+            .drivers
+            .get(TestStaticCredentialDriver::NAME)
+            .expect("test-static driver is configured")
+            .clone();
+        self.drivers
+            .insert(DbCredstoreCredentialDriver::NAME.to_string(), driver);
+        self
+    }
+
     pub async fn store_provider_credentials(
         &self,
         provider_name: &str,
@@ -1164,10 +1195,6 @@ fn connect_default_credential_store(
     config: &toml::Table,
     required: bool,
 ) -> CoreResult<()> {
-    if !required && config.is_empty() {
-        return Ok(());
-    }
-
     let Some(store) = store else {
         if required {
             return Err(Error::config(
