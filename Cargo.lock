@@ -4577,6 +4577,7 @@ dependencies = [
  "prost-types",
  "rcgen",
  "regex",
+ "reqwest 0.12.28",
  "rustls",
  "serde",
  "serde_json",
@@ -4591,6 +4592,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

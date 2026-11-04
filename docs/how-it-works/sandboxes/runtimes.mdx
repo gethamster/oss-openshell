@@ -371,3 +371,20 @@ MicroVM persists the resolved UID:GID with the writable overlay and retains it a
 On Docker and Podman, the image's `WORKDIR` becomes the workspace. Images with no `WORKDIR`, `/`, or `/sandbox` use `/sandbox`. Any other `WORKDIR` must exist in the image and be writable by the sandbox user. Kubernetes and MicroVM always use `/sandbox`.
 
 Custom Docker and Podman workspaces use the workload container's writable layer, not a managed named volume. Files survive stop/start of the same container, but removing or replacing that container removes its workspace changes. Export files you need to retain before deleting the sandbox.
+
+## Hosted allocation billing
+
+The Kubernetes compute driver can report trusted allocation intervals to a hosted
+billing authority. This is disabled unless the operator sets
+`OPENSHELL_BILLING_CONFIG` to an absolute path containing `endpoint`, `token_file`,
+`outbox`, and a `workspaces` map from exact OpenShell workspace names to billing
+resource IDs. The endpoint must use HTTPS; the token file and durable outbox must
+be private to the driver. Do not put payment credentials in this file.
+
+The driver reserves CPU and memory funds before create/start, measures allocated
+requests from the owned Pod's scheduling timestamp, and keeps receipts until the
+billing authority acknowledges them. Its periodic lifecycle reconciliation renews
+reservations. If admission or renewal fails, compute is stopped through the normal
+retained-sandbox lifecycle. Unmapped workspaces and unconfigured installations
+remain outside hosted billing. A released generation requires a fresh start;
+unknown release outcomes retain their reservation and evidence.
