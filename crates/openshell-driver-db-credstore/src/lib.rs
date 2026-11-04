@@ -586,36 +586,71 @@ fn load_or_create_file_key_encryption_key(path: &Path) -> CoreResult<[u8; KEY_LE
             path.display()
         ))
     })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| Error::config("credential key path has no parent"))?;
+    let temporary = parent.join(format!(
+        ".key-encryption-key-{}.tmp",
+        hex_encode(&random_bytes_core::<16>()?)
+    ));
     let key_encryption_key = random_bytes_core::<KEY_LEN>()?;
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     options.mode(0o600);
-    match options.open(path) {
-        Ok(mut file) => {
-            if let Err(err) = file.write_all(&key_encryption_key) {
-                let _ = fs::remove_file(path);
-                return Err(Error::config(format!(
-                    "failed to write default credential storage key-encryption key '{}': {err}",
-                    path.display()
-                )));
-            }
-            openshell_core::paths::set_file_owner_only(path).map_err(|err| {
+    let mut file = options.open(&temporary).map_err(|err| {
+        Error::config(format!(
+            "failed to stage credential key '{}': {err}",
+            path.display()
+        ))
+    })?;
+    let result = (|| {
+        // A new key becomes visible only after every byte is durable. Linking
+        // without replacement lets concurrent initializers keep one winner.
+        file.write_all(&key_encryption_key)
+            .and_then(|()| file.sync_all())
+            .map_err(|err| {
                 Error::config(format!(
-                    "failed to restrict default credential storage key-encryption key '{}': {err}",
+                    "failed to write credential key '{}': {err}",
                     path.display()
                 ))
             })?;
-            Ok(key_encryption_key)
+        drop(file);
+        openshell_core::paths::set_file_owner_only(&temporary).map_err(|err| {
+            Error::config(format!(
+                "failed to restrict credential key '{}': {err}",
+                path.display()
+            ))
+        })?;
+        match fs::hard_link(&temporary, path) {
+            Ok(()) => Ok(key_encryption_key),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                load_or_create_file_key_encryption_key(path)
+            }
+            Err(err) => Err(Error::config(format!(
+                "failed to publish credential key '{}': {err}",
+                path.display()
+            ))),
         }
-        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-            load_or_create_file_key_encryption_key(path)
-        }
-        Err(err) => Err(Error::config(format!(
-            "failed to create default credential storage key-encryption key '{}': {err}",
-            path.display()
-        ))),
-    }
+    })();
+    let cleanup = fs::remove_file(&temporary);
+    let key = result?;
+    cleanup.map_err(|err| {
+        Error::config(format!(
+            "failed to remove staged credential key '{}': {err}",
+            temporary.display()
+        ))
+    })?;
+    #[cfg(unix)]
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|err| {
+            Error::config(format!(
+                "failed to sync credential key directory '{}': {err}",
+                parent.display()
+            ))
+        })?;
+    Ok(key)
 }
 
 fn new_handle_id() -> Result<String, Status> {
@@ -1218,6 +1253,43 @@ mod tests {
             restarted.decrypt_envelope(&envelope).unwrap(),
             "sk-persisted"
         );
+    }
+
+    #[test]
+    fn concurrent_file_key_initializers_share_one_complete_key() {
+        for _ in 0..12 {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join(DEFAULT_KEY_ENCRYPTION_KEY_FILE);
+            let barrier = std::sync::Barrier::new(16);
+            let keys = std::thread::scope(|scope| {
+                let handles = (0..16)
+                    .map(|_| {
+                        let path = &path;
+                        let barrier = &barrier;
+                        scope.spawn(move || {
+                            barrier.wait();
+                            load_or_create_file_key_encryption_key(path).unwrap()
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                handles
+                    .into_iter()
+                    .map(|thread| thread.join().unwrap())
+                    .collect::<Vec<_>>()
+            });
+            assert!(keys.iter().all(|key| key == &keys[0]));
+            assert_eq!(fs::read(&path).unwrap(), keys[0]);
+            assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn malformed_existing_file_key_is_never_replaced() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(DEFAULT_KEY_ENCRYPTION_KEY_FILE);
+        fs::write(&path, [7_u8; KEY_LEN - 1]).unwrap();
+        assert!(load_or_create_file_key_encryption_key(&path).is_err());
+        assert_eq!(fs::read(&path).unwrap(), [7_u8; KEY_LEN - 1]);
     }
 
     #[test]
