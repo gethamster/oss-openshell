@@ -463,8 +463,8 @@ impl SshIdentityStore {
             .to_openssh(russh::keys::ssh_key::LineEnding::default())
             .map_err(|_| Status::internal("encode sandbox SSH host key failed"))?;
         let owner = Self::owner(sandbox, HashMap::new());
-        // A distinct candidate path is essential for K8s/Vault: losing a CAS
-        // must never overwrite or delete the winning candidate's credential.
+        // Each candidate needs independent material: losing a CAS must never
+        // overwrite or delete the winning candidate's credential.
         let candidate_id = uuid::Uuid::new_v4().to_string();
         let handle = self
             .credentials
@@ -482,6 +482,7 @@ impl SshIdentityStore {
             fingerprint: key.public_key().fingerprint(HashAlg::Sha256).to_string(),
             credential_handle: handle.encode_to_vec(),
         };
+        let handles = HashMap::from([(CREDENTIAL_KEY.to_string(), handle)]);
         let payload = serde_json::to_vec(&identity)
             .map_err(|_| Status::internal("encode sandbox SSH identity failed"))?;
         // Retain losing handles until cleanup succeeds, so deletion can retry
