@@ -8,6 +8,13 @@ on:
       - "pull-request/[0-9]+"
   workflow_dispatch:
     inputs:
+      metadata_runner:
+        description: Runner for read-only PR metadata resolution
+        type: choice
+        default: oss-linux-small
+        options:
+          - oss-linux-small
+          - ubuntu-latest
       macos_runner:
         description: Arm64 macOS runner pool for manual verification
         type: choice
@@ -32,7 +39,7 @@ concurrency:
 jobs:
   pr_metadata:
     name: Resolve PR metadata
-    runs-on: oss-linux-small
+    runs-on: ${{ inputs.metadata_runner || 'oss-linux-small' }}
     permissions:
       contents: read
       pull-requests: read
