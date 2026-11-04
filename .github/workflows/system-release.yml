@@ -77,12 +77,14 @@ jobs:
           GATEWAY_TRIPLE: ${{ matrix.gateway }}
         run: |
           set -euo pipefail
-          for suite in credentials::tests ssh_identity::tests supervisor_pool::tests; do
-            nix develop -c cargo test --release --target "$GATEWAY_TRIPLE" \
-              -p openshell-server --lib "$suite" | tee credential-tests-current.log
-            grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed;' credential-tests-current.log
-            cat credential-tests-current.log >> credential-tests.log
-          done
+          # Match the branch checks' process-per-test isolation, including the
+          # provider-export audit that installs a thread-local tracing subscriber.
+          nix develop -c cargo nextest run --release --profile ci \
+            --target "$GATEWAY_TRIPLE" -p openshell-server --lib \
+            --color never --no-tests=fail \
+            -E 'test(/^(credentials|grpc::provider_credentials|ssh_identity|supervisor_pool)::tests::/)' \
+            2>&1 | tee credential-tests.log
+          grep -Eq 'Summary.* [1-9][0-9]* tests run: [1-9][0-9]* passed' credential-tests.log
       - name: Package verified binaries
         env:
           VERSION: ${{ inputs.version }}
