@@ -329,6 +329,16 @@ pub async fn reconcile_missing(client: Client) -> Result<()> {
     };
     for entry in fs::read_dir(&billing.config.outbox)
         .map_err(|_| "billing inventory unavailable")?
+        .filter(|entry| {
+            entry.is_err()
+                || entry.as_ref().is_ok_and(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .is_some_and(|ext| ext == "enrolled")
+                        && entry.path().with_extension("json").exists()
+                })
+        })
         .take(1000)
     {
         let path = entry.map_err(|_| "billing inventory unavailable")?.path();
