@@ -11,6 +11,24 @@ async fn exhausted_billing_suspends_compute_and_retains_workspace() {
         std::env::var("BILLING_RUNTIME_QUALIFICATION").as_deref(),
         Ok("1")
     );
+    let billing_config: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(std::env::var("OPENSHELL_BILLING_CONFIG").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let endpoint = reqwest::Url::parse(billing_config["endpoint"].as_str().unwrap()).unwrap();
+    assert!(matches!(
+        endpoint.host_str(),
+        Some("127.0.0.1" | "localhost" | "::1")
+    ));
+    assert!(
+        billing_config["workspaces"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|resource| resource
+                .as_str()
+                .is_some_and(|id| id.starts_with("billing-local-")))
+    );
     let config = kube::Config::infer()
         .await
         .expect("local Kubernetes config");
@@ -57,7 +75,7 @@ async fn exhausted_billing_suspends_compute_and_retains_workspace() {
         .unwrap_err();
     assert_eq!(error, "billing admission or receipt rejected");
     driver.reconcile_sandbox_runtime_resources().await;
-    tokio::time::timeout(Duration::from_secs(60), async {
+    tokio::time::timeout(Duration::from_mins(1), async {
         loop {
             let current = api.api.get("billing-runtime").await.unwrap();
             if current.data["spec"]["operatingMode"] == "Suspended"
