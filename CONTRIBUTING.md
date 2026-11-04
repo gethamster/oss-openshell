@@ -18,19 +18,6 @@ OpenShell is agent-first, not agent-only. The distinction matters:
 - **Don't** submit code you can't explain without your agent open.
 - **Don't** use agents as a substitute for understanding the system. Read the RFCs, crate READMEs, and published docs.
 
-## First-Time Contributors
-
-We use a vouch system. This exists because AI makes it trivial to generate plausible-looking but low-quality contributions, and we can no longer trust by default.
-
-1. Open a [Vouch Request](https://github.com/NVIDIA/OpenShell/discussions/new?category=vouch-request) discussion.
-2. Describe what you want to change and why.
-3. Write in your own words. AI-generated vouch requests will be denied.
-4. A maintainer will comment `/vouch` if approved, and the request discussion
-   will close automatically.
-5. **Get vouched before opening a PR.** Once vouched, you can submit pull requests.
-
-**If you are not vouched, any pull request you open will be automatically closed.** The PR and its discussion are preserved. Once vouched, open a new PR (preferred) or reopen the closed one. It cannot be held open or converted to a draft to bypass the check. Org members and collaborators with push access bypass this check.
-
 ### Finding Work
 
 Issues labeled [`good first issue`](https://github.com/NVIDIA/OpenShell/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) are scoped, well-documented, and friendly to new contributors. Start there. If you need guidance, comment on the issue.
@@ -68,11 +55,7 @@ Do not start substantial issue-backed work until a maintainer has accepted the i
 
 Use agents and the repository skills as needed to understand the affected code, evaluate tradeoffs, implement the smallest coherent change, and verify it. The pull request should explain what changed and how it was tested; it should not substitute an agent transcript for the contributor's understanding.
 
-Every pull request must be approved by someone listed in [MAINTAINERS.md](MAINTAINERS.md) before it can merge. This is enforced by the `OpenShell / Maintainer Approval` status check, which turns green once one of those reviewers approves. Reviews from other contributors are welcome and count toward the general approval requirement, but they do not satisfy this check.
-
-Pull requests that touch the enforcement machinery itself — anything under `.github/workflows/`, `.github/actions/`, `MAINTAINERS.md`, `.github/CODEOWNERS`, or the enforcement scripts in `tasks/scripts/` — additionally require a code owner's approval, listed in [.github/CODEOWNERS](.github/CODEOWNERS). The status check reads its inputs from `main`, but a workflow triggered by a review runs the pull request's own copy of the workflow file, so GitHub's native code owner requirement is what keeps a change from disabling the gate that would have blocked it.
-
-Maintainers are not requested automatically. If your pull request has been idle, ask for a reviewer in the pull request or in the CNCF Slack channel rather than waiting.
+Follow this fork's configured repository protections and request only reviews required for the change.
 
 ## Agent Skills
 
@@ -447,15 +430,8 @@ Issues receive `state:stale` after 28 days without activity; pull requests recei
 
 For release notes, describe the user-facing change in a few short, easy-to-read sentences in the optional **Release Notes** section of the PR description. Keep the section concise. Stable releases use it when non-empty; otherwise they summarize the PR title and description.
 
-Every PR must close an existing issue, except automated dependency updates and the build and flaky-test fixes described below. In the PR's **Related Issue** section, use `Closes #NNN` for the issue covering that PR's scope. Split multi-PR work into a closable issue for each PR; a tracking issue can link them. Security fixes follow the private disclosure process in [SECURITY.md](SECURITY.md).
-
-Authors without write access to the target repository must link at least one issue with `state:accepted`, and every linked issue must be accepted. This applies to drafts and direct requests to agents. Authors with verified `WRITE`, `MAINTAIN`, or `ADMIN` access may create a PR without the acceptance label; they must still follow the issue-linking requirement above. PR body text, roadmap placement, other labels, and vouch status do not bypass acceptance.
-
-The `PR Issue Acceptance` workflow reports the native `OpenShell / PR Issue Acceptance` job result for the triggering PR when it is opened, edited, reopened, or updated with new commits. It does not publish a shared commit status; lookup and execution errors fail the job. Link accepted issues in this repository using `Fixes #NNN` or `Closes #NNN`; GitHub recognizes closing references when a PR targets the default branch. Rerun the workflow after issue labels change. Making the job required for merging and configuring any required Actions event policy are separate repository settings; merge-queue support is not included.
-
-Automated dependency update PRs, including Dependabot PRs, are exempt from the separate issue and closing-reference requirement. Human-authored dependency updates follow the normal issue requirement. The exception does not bypass `PR Issue Acceptance` for authors without repository write access or change applicable verification, review, or private vulnerability disclosure requirements.
-
-Authors with `WRITE`, `MAINTAIN`, or `ADMIN` access may open a PR that only fixes a broken build or flaky tests without a separate issue. Describe the failure in the PR instead. Authors without write access follow the normal issue and acceptance requirements.
+This fork uses its repository permissions and configured required checks.
+For contributions to NVIDIA/OpenShell, follow the upstream repository's current issue acceptance and contributor requirements.
 
 ### Branch Names
 

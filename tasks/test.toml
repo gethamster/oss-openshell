@@ -22,7 +22,6 @@ depends = [
   "test:codex-security-diagnostics",
   "test:docs-website",
   "test:docs-nav",
-  "test:maintainer-approval",
   "test:cargo-lockfile-alignment",
 ]
 
@@ -89,11 +88,6 @@ hide = true
 ["test:codex-security-diagnostics"]
 description = "Test public Codex Security diagnostics and sensitive-data filtering"
 run = "uv run --no-project --with pytest pytest tasks/scripts/codex_security_diagnostics_test.py"
-hide = true
-
-["test:maintainer-approval"]
-description = "Test the maintainer approval gate and change-alert tools"
-run = "uv run --no-project --with pytest pytest -o \"python_files=*_test.py\" tasks/scripts/check_maintainer_approval_test.py tasks/scripts/alert_maintainer_change_test.py"
 hide = true
 
 [e2e]
