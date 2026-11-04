@@ -167,6 +167,11 @@ A provisioning timeout can be repaired by Stop after its original driver work
 settles and cleanup completes. Stop exposes Stopped without discarding the timeout
 diagnosis or storage. This lifecycle behavior also applies when updates are disabled.
 
+An explicit Delete retries retained `Deleting` state under the same sandbox-ID
+lifecycle gate. It reuses the exact stored identity and retains deletion state
+on a failed retry; it does not restore a previous running phase. Mutation replay
+still returns the recorded response for the same request ID.
+
 ## Operator credential export
 
 `GetProviderCredentials` exports selected profile-declared runtime environment

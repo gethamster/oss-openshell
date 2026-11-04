@@ -369,8 +369,8 @@ struct DeleteTransition {
 enum BeginDelete {
     /// This request persisted `Deleting` and owns the driver call and recovery.
     Started(Box<DeleteTransition>),
-    /// Another request already owns or completed the driver-side delete call.
-    AlreadyDeleting,
+    /// Exact retained deletion snapshot, possibly left by failed cleanup.
+    AlreadyDeleting(Box<Sandbox>),
 }
 
 /// Explicit lifecycle operations that quiesce a running sandbox: an ordinary
@@ -1896,7 +1896,7 @@ impl ComputeRuntime {
             .await
         {
             Ok(BeginDelete::Started(transition)) => *transition,
-            Ok(BeginDelete::AlreadyDeleting) => {
+            Ok(BeginDelete::AlreadyDeleting(_)) => {
                 return Status::new(
                     original.code(),
                     format!(
@@ -3428,21 +3428,27 @@ impl ComputeRuntime {
         // `Started` carries both sides of the CAS transition: the durable
         // `Deleting` row used to fence recovery, and the prior row used only
         // for exact-version rollback after an ambiguous driver failure.
-        let transition = match self
+        let (transition, retrying) = match self
             .begin_sandbox_delete_with_initial_snapshot(&target.sandbox_id, Some(current), None)
             .await?
         {
-            BeginDelete::AlreadyDeleting => {
-                return Ok(DeleteSandboxResult {
-                    sandbox_id: target.sandbox_id,
-                    outcome: openshell_core::proto::DeletionOutcome::Accepted,
-                });
-            }
-            BeginDelete::Started(transition) => *transition,
+            // The lifecycle gate excludes an active delete on this gateway.
+            // Retry the same driver identity: Deleting can outlive failed
+            // create compensation or an earlier asynchronous delete.
+            BeginDelete::AlreadyDeleting(deleting) => (
+                DeleteTransition {
+                    previous: (*deleting).clone(),
+                    deleting: *deleting,
+                },
+                true,
+            ),
+            BeginDelete::Started(transition) => (*transition, false),
         };
 
-        self.sandbox_index.update_from_sandbox(&transition.deleting);
-        self.sandbox_watch_bus.notify(&target.sandbox_id);
+        if !retrying {
+            self.sandbox_index.update_from_sandbox(&transition.deleting);
+            self.sandbox_watch_bus.notify(&target.sandbox_id);
+        }
         drop(guard);
 
         let result = self
@@ -3495,7 +3501,12 @@ impl ComputeRuntime {
                 })
             }
             Err(err) => {
-                self.recover_failed_delete(&delete_guard, &transition).await;
+                // A retry owns no pre-delete running state to restore. Keep
+                // the retained deletion authoritative even if lookup would
+                // still observe its terminating backend.
+                if !retrying {
+                    self.recover_failed_delete(&delete_guard, &transition).await;
+                }
                 Err(Status::internal(format!(
                     "delete sandbox failed: {}",
                     err.message()
@@ -3550,7 +3561,7 @@ impl ComputeRuntime {
             if SandboxPhase::try_from(sandbox.phase()).unwrap_or(SandboxPhase::Unknown)
                 == SandboxPhase::Deleting
             {
-                return Ok(BeginDelete::AlreadyDeleting);
+                return Ok(BeginDelete::AlreadyDeleting(Box::new(sandbox)));
             }
 
             let previous = sandbox.clone();
@@ -10198,7 +10209,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ssh_failed_create_backend_cleanup_error_does_not_restore_provisioning() {
+    async fn ssh_failed_create_backend_cleanup_can_be_retried_by_delete() {
         let driver = ControlledDriver::new();
         driver.set_delete_outcome(ControlledDeleteOutcome::Error("injected delete failure"));
         driver.set_get_outcome(ControlledGetOutcome::Error("injected lookup failure"));
@@ -10230,11 +10241,16 @@ mod tests {
             .unwrap();
         assert_eq!(retained.phase(), SandboxPhase::Deleting as i32);
         assert_eq!(credentials.stored_credential_count(), Some(1));
-        driver.set_get_outcome(ControlledGetOutcome::Missing);
-        runtime
-            .reconcile_store_with_backend(Duration::ZERO)
+        driver.set_delete_outcome(ControlledDeleteOutcome::Ok(false));
+        let result = runtime
+            .delete_sandbox("default", sandbox.object_name())
             .await
             .unwrap();
+        assert_eq!(
+            result.outcome,
+            openshell_core::proto::DeletionOutcome::Completed
+        );
+        assert_eq!(driver.delete_calls(), 2);
         assert!(
             runtime
                 .store
@@ -10244,6 +10260,42 @@ mod tests {
                 .is_none()
         );
         assert_eq!(credentials.stored_credential_count(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn pending_delete_retry_failure_retains_exact_record_and_owned_state() {
+        let driver = ControlledDriver::new();
+        driver.set_delete_outcome(ControlledDeleteOutcome::Error("cleanup unavailable"));
+        // An inconclusive failed delete must not use even an absent lookup to
+        // discard retained cleanup state on this explicit retry path.
+        driver.set_get_outcome(ControlledGetOutcome::Missing);
+        let runtime = test_runtime(driver.clone()).await;
+        let sandbox = sandbox_record("sb-delete-retry", "delete-retry", SandboxPhase::Deleting);
+        runtime.store.put_message(&sandbox).await.unwrap();
+        let session = seed_sandbox_owned_records(&runtime, &sandbox).await;
+        let before = runtime
+            .store
+            .get_message::<Sandbox>(sandbox.object_id())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let error = runtime
+            .delete_sandbox("default", sandbox.object_name())
+            .await
+            .unwrap_err();
+        assert!(error.message().contains("cleanup unavailable"));
+        assert_eq!(driver.delete_calls(), 1);
+        assert_eq!(
+            runtime
+                .store
+                .get_message::<Sandbox>(sandbox.object_id())
+                .await
+                .unwrap()
+                .unwrap(),
+            before
+        );
+        assert_sandbox_owned_records(&runtime, &sandbox, &session, true).await;
     }
 
     #[tokio::test]
@@ -14622,6 +14674,7 @@ mod tests {
     async fn concurrent_duplicate_deletes_call_driver_once() {
         let driver = ControlledDriver::new();
         driver.block_delete();
+        driver.set_delete_outcome(ControlledDeleteOutcome::Ok(false));
         let runtime = test_runtime(driver.clone()).await;
         let sandbox = sandbox_record("sb-1", "sandbox-a", SandboxPhase::Ready);
         runtime.store.put_message(&sandbox).await.unwrap();
@@ -14657,6 +14710,32 @@ mod tests {
                 .acknowledged()
         );
         assert_eq!(driver.delete_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn accepted_delete_can_retry_until_the_backend_is_absent() {
+        let driver = ControlledDriver::new();
+        let runtime = test_runtime(driver.clone()).await;
+        let sandbox = sandbox_record("sb-delete-pending", "delete-pending", SandboxPhase::Ready);
+        runtime.store.put_message(&sandbox).await.unwrap();
+        assert_eq!(
+            runtime
+                .delete_sandbox("default", sandbox.object_name())
+                .await
+                .unwrap()
+                .outcome,
+            openshell_core::proto::DeletionOutcome::Accepted
+        );
+        driver.set_delete_outcome(ControlledDeleteOutcome::Ok(false));
+        assert_eq!(
+            runtime
+                .delete_sandbox("default", sandbox.object_name())
+                .await
+                .unwrap()
+                .outcome,
+            openshell_core::proto::DeletionOutcome::Completed
+        );
+        assert_eq!(driver.delete_calls(), 2);
     }
 
     #[tokio::test]
@@ -15186,7 +15265,7 @@ mod tests {
             );
             assert_eq!(result.sandbox_id, "sb-1");
         }
-        assert_eq!(driver.delete_calls(), 1);
+        assert_eq!(driver.delete_calls(), 2);
 
         let stored = runtime
             .store
