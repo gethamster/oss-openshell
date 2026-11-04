@@ -14672,6 +14672,7 @@ mod tests {
     async fn concurrent_duplicate_deletes_call_driver_once() {
         let driver = ControlledDriver::new();
         driver.block_delete();
+        driver.set_delete_outcome(ControlledDeleteOutcome::Ok(false));
         let runtime = test_runtime(driver.clone()).await;
         let sandbox = sandbox_record("sb-1", "sandbox-a", SandboxPhase::Ready);
         runtime.store.put_message(&sandbox).await.unwrap();
@@ -14707,6 +14708,32 @@ mod tests {
                 .acknowledged()
         );
         assert_eq!(driver.delete_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn accepted_delete_can_retry_until_the_backend_is_absent() {
+        let driver = ControlledDriver::new();
+        let runtime = test_runtime(driver.clone()).await;
+        let sandbox = sandbox_record("sb-delete-pending", "delete-pending", SandboxPhase::Ready);
+        runtime.store.put_message(&sandbox).await.unwrap();
+        assert_eq!(
+            runtime
+                .delete_sandbox("default", sandbox.object_name())
+                .await
+                .unwrap()
+                .outcome,
+            openshell_core::proto::DeletionOutcome::Accepted
+        );
+        driver.set_delete_outcome(ControlledDeleteOutcome::Ok(false));
+        assert_eq!(
+            runtime
+                .delete_sandbox("default", sandbox.object_name())
+                .await
+                .unwrap()
+                .outcome,
+            openshell_core::proto::DeletionOutcome::Completed
+        );
+        assert_eq!(driver.delete_calls(), 2);
     }
 
     #[tokio::test]
