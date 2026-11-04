@@ -102,6 +102,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn internal_ssh_identity_bypasses_the_provider_driver() {
+        let key_dir = tempfile::tempdir().unwrap();
+        let mut identities = fixture().await;
+        let config = crate::Config::new(None).with_credential_drivers(["test-static"]);
+        let file = toml::from_str(&format!(
+            "[openshell.gateway.credential_storage]\nkey_encryption_key_path = {:?}\n",
+            key_dir.path().join("key").to_str().unwrap()
+        ))
+        .unwrap();
+        identities.credentials = CredentialRuntime::from_config_file_with_store(
+            &config,
+            Some(&file),
+            identities.store.clone(),
+        )
+        .await
+        .unwrap();
+        let mut sb = sandbox("sandbox-a");
+        let mut auth = authentication();
+        identities.prepare(&mut sb, &mut auth).await.unwrap();
+        assert!(auth.supervisor.ssh_host_private_key.is_some());
+        let stored = identities.load(&sb).await.unwrap().unwrap();
+        let handle = CredentialHandle::decode(stored.credential_handle.as_slice()).unwrap();
+        assert_eq!(
+            handle.driver,
+            openshell_driver_db_credstore::DbCredstoreCredentialDriver::NAME
+        );
+        assert_eq!(identities.credentials.stored_credential_count(), Some(0));
+    }
+
+    #[tokio::test]
     async fn identity_survives_reload_and_is_never_public() {
         let identities = fixture().await;
         let mut sb = sandbox("sandbox-a");

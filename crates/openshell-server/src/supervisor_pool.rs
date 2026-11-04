@@ -3619,6 +3619,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn internal_launch_material_bypasses_the_provider_driver() {
+        let key_dir = tempfile::tempdir().unwrap();
+        let mut fixture = Fixture::new().await;
+        let config = crate::Config::new(None).with_credential_drivers(["test-static"]);
+        let file = toml::from_str(&format!(
+            "[openshell.gateway.credential_storage]\nkey_encryption_key_path = {:?}\n",
+            key_dir.path().join("key").to_str().unwrap()
+        ))
+        .unwrap();
+        fixture.credentials = CredentialRuntime::from_config_file_with_store(
+            &config,
+            Some(&file),
+            fixture.store.clone(),
+        )
+        .await
+        .unwrap();
+        let pool = fixture.replica("gateway");
+        let mut payload = AssignmentPayload {
+            route: "rt-internal-test".into(),
+            sandbox_id: "sandbox".into(),
+            generation: "generation-1".into(),
+            workspace: "test".into(),
+            phase: RecordPhase::Published,
+            writer: "gateway".into(),
+            material_handle: Vec::new(),
+        };
+        let handle = pool
+            .store_material(&payload, b"private launch fixture")
+            .await
+            .unwrap();
+        assert_eq!(
+            handle.driver,
+            openshell_driver_db_credstore::DbCredstoreCredentialDriver::NAME
+        );
+        assert_eq!(fixture.credentials.stored_credential_count(), Some(0));
+        payload.material_handle = handle.encode_to_vec();
+        assert_eq!(
+            pool.load_material(&payload).await.unwrap(),
+            b"private launch fixture"
+        );
+        pool.delete_material(&payload, handle).await.unwrap();
+        assert!(pool.load_material(&payload).await.is_err());
+    }
+
+    #[tokio::test]
     async fn records_of_ended_generations_are_removed() {
         let fixture = Fixture::new().await;
         fixture.member("m1", "p1", false).await;
