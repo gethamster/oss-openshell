@@ -102,7 +102,7 @@ func TestLogin_ReusesValidToken(t *testing.T) {
 		TokenType:    "Bearer",
 		Expiry:       time.Now().Add(1 * time.Hour),
 	}
-	err := writeToken(tokenDir, existingToken)
+	err := writeToken(tokenDir, "https://issuer-should-not-be-called.example.com", "test-client", existingToken)
 	require.NoError(t, err)
 
 	// Login with explicit issuer/clientID and WithTokenDir (internal)
@@ -135,7 +135,7 @@ func TestLogin_ExpiredTokenTriggersFlow(t *testing.T) {
 		TokenType:    "Bearer",
 		Expiry:       time.Now().Add(-1 * time.Hour), // expired
 	}
-	err := writeToken(tokenDir, expiredToken)
+	err := writeToken(tokenDir, provider.URL, "test-client", expiredToken)
 	require.NoError(t, err)
 
 	// Start a callback server ourselves to simulate the auth code callback.

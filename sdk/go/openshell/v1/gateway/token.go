@@ -87,10 +87,13 @@ func readEdgeToken(dir string) (string, error) {
 	return token, nil
 }
 
-// oidcBundle is the on-disk representation of oidc_token.json.
+// oidcBundle is the on-disk representation of oidc_token.json. The Rust
+// CLI writes expires_at (unix seconds); expiry and expires_in remain for
+// files written by earlier Go SDK versions.
 type oidcBundle struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
+	ExpiresAt    int64  `json:"expires_at,omitempty"`
 	Expiry       string `json:"expiry"`
 	ExpiresIn    int64  `json:"expires_in"`
 }
@@ -133,21 +136,23 @@ func (d *diskTokenSource) Token() (*oauth2.Token, error) {
 		TokenType:    "Bearer",
 	}
 
-	// Parse expiry from the absolute "expiry" field only. The "expires_in"
-	// field (seconds-until-expiry) cannot be used reliably because there is
-	// no "written_at" timestamp: interpreting it at read time would make
-	// stale tokens appear perpetually valid.
-	if bundle.Expiry != "" {
+	// Parse expiry from the absolute "expires_at" field, falling back to
+	// "expiry". The "expires_in" field (seconds-until-expiry) cannot be used
+	// reliably because there is no "written_at" timestamp: interpreting it
+	// at read time would make stale tokens appear perpetually valid.
+	if bundle.ExpiresAt > 0 {
+		tok.Expiry = time.Unix(bundle.ExpiresAt, 0)
+	} else if bundle.Expiry != "" {
 		expiry, parseErr := time.Parse(time.RFC3339, bundle.Expiry)
 		if parseErr != nil {
 			return nil, fmt.Errorf("%w: invalid expiry in %s: %v", ErrTokenLoad, oidcTokenFile, parseErr)
 		}
 		tok.Expiry = expiry
+	}
 
-		if time.Now().After(expiry) {
-			return nil, fmt.Errorf("%w: token in %s expired at %s; re-authenticate with the CLI",
-				ErrTokenLoad, oidcTokenFile, expiry.Format(time.RFC3339))
-		}
+	if !tok.Expiry.IsZero() && time.Now().After(tok.Expiry) {
+		return nil, fmt.Errorf("%w: token in %s expired at %s; re-authenticate with the CLI",
+			ErrTokenLoad, oidcTokenFile, tok.Expiry.Format(time.RFC3339))
 	}
 
 	return tok, nil

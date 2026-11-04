@@ -106,7 +106,7 @@ func Login(ctx context.Context, gatewayName string, opts ...LoginOption) (*oauth
 
 	// Persist token to disk unless in-memory mode is requested.
 	if !cfg.inMemory && tokenDir != "" {
-		if writeErr := writeToken(tokenDir, tok); writeErr != nil {
+		if writeErr := writeToken(tokenDir, cfg.issuer, cfg.clientID, tok); writeErr != nil {
 			return nil, writeErr
 		}
 	}

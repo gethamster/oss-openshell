@@ -28,21 +28,28 @@ const tokenExpiryLeeway = 10 * time.Second
 // diskTokenSource for interop.
 type oidcBundle struct {
 	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	ExpiresAt    int64  `json:"expires_at,omitempty"`
+	Issuer       string `json:"issuer"`
+	ClientID     string `json:"client_id"`
 	Expiry       string `json:"expiry"`
 	ExpiresIn    int64  `json:"expires_in"`
 }
 
 // writeToken persists an oauth2.Token to disk as oidc_token.json in
 // the given directory. The file is written with 0600 permissions
-// (owner-only) to protect credentials.
-func writeToken(dir string, tok *oauth2.Token) error {
+// (owner-only) to protect credentials. The Rust CLI requires issuer and
+// client_id to parse the bundle.
+func writeToken(dir, issuer, clientID string, tok *oauth2.Token) error {
 	bundle := oidcBundle{
 		AccessToken:  tok.AccessToken,
 		RefreshToken: tok.RefreshToken,
+		Issuer:       issuer,
+		ClientID:     clientID,
 	}
 
 	if !tok.Expiry.IsZero() {
+		bundle.ExpiresAt = tok.Expiry.Unix()
 		bundle.Expiry = tok.Expiry.UTC().Format(time.RFC3339)
 		remaining := time.Until(tok.Expiry)
 		if remaining > 0 {
@@ -117,11 +124,13 @@ func readToken(dir string) (*oauth2.Token, error) {
 		TokenType:    "Bearer",
 	}
 
-	// Parse expiry from the "expiry" field (RFC 3339). Without an
-	// explicit expiry, the token is treated as non-expiring (always
-	// valid); "expires_in" alone cannot reconstruct an absolute time
-	// without a write timestamp.
-	if bundle.Expiry != "" {
+	// Parse expiry from "expires_at" (unix seconds), falling back to
+	// "expiry" (RFC 3339). Without an explicit expiry, the token is
+	// treated as non-expiring (always valid); "expires_in" alone cannot
+	// reconstruct an absolute time without a write timestamp.
+	if bundle.ExpiresAt > 0 {
+		tok.Expiry = time.Unix(bundle.ExpiresAt, 0)
+	} else if bundle.Expiry != "" {
 		expiry, parseErr := time.Parse(time.RFC3339, bundle.Expiry)
 		if parseErr != nil {
 			return nil, fmt.Errorf("%w: invalid expiry format in %s: %v", ErrTokenPersist, oidcTokenFile, parseErr)
