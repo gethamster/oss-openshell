@@ -2576,6 +2576,14 @@ impl KubernetesComputeDriver {
         };
 
         obj.data = data;
+        crate::billing::reserve(
+            workspace,
+            &sandbox.id,
+            &generation,
+            &obj.data["spec"]["podTemplate"]["spec"],
+        )
+        .await
+        .map_err(KubernetesDriverError::Precondition)?;
         let created = match tokio::time::timeout(
             KUBE_API_TIMEOUT,
             agent_sandbox_api.api.create(&PostParams::default(), &obj),
@@ -3993,6 +4001,11 @@ impl KubernetesComputeDriver {
                 pod_is_gone,
             );
             if stop_is_complete {
+                if let Some(generation) = sandbox_runtime_generation(&object) {
+                    crate::billing::release(generation)
+                        .await
+                        .map_err(KubernetesDriverError::Message)?;
+                }
                 self.delete_sandbox_runtime_supervisor(
                     sandbox_id,
                     &namespace,
@@ -4182,6 +4195,16 @@ impl KubernetesComputeDriver {
             ));
         }
 
+        let workspace = annotation_or_label(&object, LABEL_SANDBOX_WORKSPACE)
+            .ok_or_else(|| KubernetesDriverError::Precondition("missing workspace".into()))?;
+        crate::billing::reserve(
+            &workspace,
+            sandbox_id,
+            generation.as_str(),
+            &object.data["spec"]["podTemplate"]["spec"],
+        )
+        .await
+        .map_err(KubernetesDriverError::Precondition)?;
         let control_connection = KubernetesControlConnection::RuntimeInitiated;
         let placement = self.new_generation_placement();
         let names = SandboxRuntimeNames::for_generation(sandbox_id, generation.as_str());
@@ -4792,6 +4815,9 @@ impl KubernetesComputeDriver {
     /// intentionally not read by the gateway, so this pass only repairs state
     /// that can be proven from the Sandbox CR and named companion objects.
     async fn reconcile_sandbox_runtime_resources(&self) {
+        if let Err(error) = crate::billing::reconcile_missing(self.client.clone()).await {
+            warn!(%error, "hosted billing receipt reconciliation needs retry");
+        }
         let lookup_api = match self
             .supported_sandbox_api_for_lookup(self.client.clone())
             .await
@@ -4876,6 +4902,12 @@ impl KubernetesComputeDriver {
                 continue;
             }
             let object = refreshed;
+            if let Err(error) = crate::billing::observe(self.client.clone(), &object).await {
+                warn!(%sandbox_id, %error, "hosted billing requires compute suspension");
+                self.suspend_sandbox_runtime_after_dependency_failure(&lookup_api, &object)
+                    .await;
+                continue;
+            }
             if let Err(error) = self.admit_stored_resources(&object).await {
                 warn!(%sandbox_id, reason = %error.message(), "Sandbox resource admission revalidation failed");
                 if error.code() == tonic::Code::FailedPrecondition {

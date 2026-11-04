@@ -27,6 +27,9 @@ openshell-policy = { path = "../openshell-policy" }
 
 opentelemetry = { workspace = true }
 tokio = { workspace = true }
+reqwest = { workspace = true }
+uuid = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tonic = { workspace = true, features = ["transport"] }
 prost = { workspace = true }
 prost-types = { workspace = true }
