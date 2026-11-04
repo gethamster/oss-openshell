@@ -3445,8 +3445,10 @@ impl ComputeRuntime {
             BeginDelete::Started(transition) => (*transition, false),
         };
 
-        self.sandbox_index.update_from_sandbox(&transition.deleting);
-        self.sandbox_watch_bus.notify(&target.sandbox_id);
+        if !retrying {
+            self.sandbox_index.update_from_sandbox(&transition.deleting);
+            self.sandbox_watch_bus.notify(&target.sandbox_id);
+        }
         drop(guard);
 
         let result = self
@@ -15263,7 +15265,7 @@ mod tests {
             );
             assert_eq!(result.sandbox_id, "sb-1");
         }
-        assert_eq!(driver.delete_calls(), 1);
+        assert_eq!(driver.delete_calls(), 2);
 
         let stored = runtime
             .store
