@@ -47,7 +47,7 @@ replica, independent of which replica runs the compute driver's watch:
   nothing.
 - **Desired set.** A launch records the instance (`supervisor_instance_assignment`)
   before anything else. The record holds only the handle of the launch
-  material, which the configured credential store keeps, as it keeps sandbox SSH
+  material, which the encrypted database credential store keeps independently of the provider credential driver, as it keeps sandbox SSH
   host keys. Every replica derives the desired set from these records and loads
   the material of instances owned by members it serves. Recording takes single
   atomic store writes and holds no lock: it reserves the route with a row named

@@ -1354,15 +1354,17 @@ impl SupervisorPool {
         let value = std::str::from_utf8(material)
             .map_err(|_| "sandbox instance launch material is not UTF-8".to_string())?;
         let (name, workspace, owner_id) = material_owner(payload);
-        let handles = self
-            .credentials
-            .store_provider_credentials_with_object_id(
-                &name,
-                workspace,
-                owner_id,
-                &Uuid::new_v4().to_string(),
-                &HashMap::from([(LAUNCH_MATERIAL_KEY.to_string(), value.to_string())]),
-                &HashMap::new(),
+        self.credentials
+            .store_internal_credential(
+                openshell_core::proto::credentials::v1::StoreCredentialRequest {
+                    provider: name,
+                    workspace: workspace.to_string(),
+                    provider_id: owner_id.to_string(),
+                    object_id: Uuid::new_v4().to_string(),
+                    credential_key: LAUNCH_MATERIAL_KEY.to_string(),
+                    value: value.to_string(),
+                    existing_handle: None,
+                },
             )
             .await
             .map_err(|status| {
@@ -1370,11 +1372,7 @@ impl SupervisorPool {
                     "store sandbox instance launch material: {}",
                     status.message()
                 )
-            })?;
-        handles
-            .get(LAUNCH_MATERIAL_KEY)
-            .cloned()
-            .ok_or_else(|| "the credential store kept no launch material".to_string())
+            })
     }
 
     async fn load_material(&self, payload: &AssignmentPayload) -> Result<Vec<u8>, String> {
@@ -2902,7 +2900,8 @@ mod tests {
                 .with_default_credential_driver(Some("test-static"));
             Self {
                 credentials: CredentialRuntime::from_config_with_store(&config, store.clone())
-                    .expect("credential runtime"),
+                    .expect("credential runtime")
+                    .with_test_internal_store(),
                 store,
                 authority: Arc::new(
                     SandboxSessionJwtAuthority::from_pem(
@@ -3617,6 +3616,51 @@ mod tests {
             (OwnerPhase::Granted, 3)
         );
         assert_eq!(fixture.identity("sandbox-d").await.auth_epoch.get(), 3);
+    }
+
+    #[tokio::test]
+    async fn internal_launch_material_bypasses_the_provider_driver() {
+        let key_dir = tempfile::tempdir().unwrap();
+        let mut fixture = Fixture::new().await;
+        let config = crate::Config::new(None).with_credential_drivers(["test-static"]);
+        let file = toml::from_str(&format!(
+            "[openshell.gateway.credential_storage]\nkey_encryption_key_path = {:?}\n",
+            key_dir.path().join("key").to_str().unwrap()
+        ))
+        .unwrap();
+        fixture.credentials = CredentialRuntime::from_config_file_with_store(
+            &config,
+            Some(&file),
+            fixture.store.clone(),
+        )
+        .await
+        .unwrap();
+        let pool = fixture.replica("gateway");
+        let mut payload = AssignmentPayload {
+            route: "rt-internal-test".into(),
+            sandbox_id: "sandbox".into(),
+            generation: "generation-1".into(),
+            workspace: "test".into(),
+            phase: RecordPhase::Published,
+            writer: "gateway".into(),
+            material_handle: Vec::new(),
+        };
+        let handle = pool
+            .store_material(&payload, b"private launch fixture")
+            .await
+            .unwrap();
+        assert_eq!(
+            handle.driver,
+            openshell_driver_db_credstore::DbCredstoreCredentialDriver::NAME
+        );
+        assert_eq!(fixture.credentials.stored_credential_count(), Some(0));
+        payload.material_handle = handle.encode_to_vec();
+        assert_eq!(
+            pool.load_material(&payload).await.unwrap(),
+            b"private launch fixture"
+        );
+        pool.delete_material(&payload, handle).await.unwrap();
+        assert!(pool.load_material(&payload).await.is_err());
     }
 
     #[tokio::test]

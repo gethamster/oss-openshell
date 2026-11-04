@@ -72,6 +72,17 @@ jobs:
           nix develop -c cargo test --release --target "$GATEWAY_TRIPLE" \
             -p openshell-server --lib auth::oidc::federation::tests | tee federation-tests.log
           grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed;' federation-tests.log
+      - name: Check internal credential isolation
+        env:
+          GATEWAY_TRIPLE: ${{ matrix.gateway }}
+        run: |
+          set -euo pipefail
+          for suite in credentials::tests ssh_identity::tests supervisor_pool::tests; do
+            nix develop -c cargo test --release --target "$GATEWAY_TRIPLE" \
+              -p openshell-server --lib "$suite" | tee credential-tests-current.log
+            grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed;' credential-tests-current.log
+            cat credential-tests-current.log >> credential-tests.log
+          done
       - name: Package verified binaries
         env:
           VERSION: ${{ inputs.version }}
@@ -87,6 +98,7 @@ jobs:
           tar -czf "dist/openshell-gateway-$GATEWAY_TRIPLE.tar.gz" -C "target/$GATEWAY_TRIPLE/release" openshell-gateway -C "$GITHUB_WORKSPACE" LICENSE LICENSE-UPSTREAM
           git rev-parse HEAD > "dist/source-$PLATFORM.txt"
           cp federation-tests.log "dist/federation-tests-$PLATFORM.log"
+          cp credential-tests.log "dist/credential-tests-$PLATFORM.log"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: system-release-${{ matrix.platform }}

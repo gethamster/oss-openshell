@@ -320,6 +320,37 @@ impl CredentialRuntime {
             .expect("test credential driver supports resolve gating")
     }
 
+    /// Store gateway-internal SSH or launch material in the encrypted database.
+    /// Provider credentials and refresh material retain their configured driver.
+    pub(crate) async fn store_internal_credential(
+        &self,
+        request: StoreCredentialRequest,
+    ) -> Result<CredentialHandle, Status> {
+        let mut handle = self
+            .connected_driver(DbCredstoreCredentialDriver::NAME)?
+            .store_credential(request)
+            .await?;
+        if handle.handle.trim().is_empty() {
+            return Err(Status::internal(
+                "internal credential store returned an empty handle",
+            ));
+        }
+        handle.driver = DbCredstoreCredentialDriver::NAME.to_string();
+        Ok(handle)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_test_internal_store(mut self) -> Self {
+        let driver = self
+            .drivers
+            .get(TestStaticCredentialDriver::NAME)
+            .expect("test-static driver is configured")
+            .clone();
+        self.drivers
+            .insert(DbCredstoreCredentialDriver::NAME.to_string(), driver);
+        self
+    }
+
     pub async fn store_provider_credentials(
         &self,
         provider_name: &str,
@@ -1164,10 +1195,6 @@ fn connect_default_credential_store(
     config: &toml::Table,
     required: bool,
 ) -> CoreResult<()> {
-    if !required && config.is_empty() {
-        return Ok(());
-    }
-
     let Some(store) = store else {
         if required {
             return Err(Error::config(
@@ -2431,6 +2458,87 @@ token_path = {token_path}
             .unwrap();
 
         assert!(runtime.stores_provider_credentials());
+    }
+
+    #[tokio::test]
+    async fn internal_storage_does_not_change_provider_or_refresh_ownership() {
+        let key_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::persistence::test_store().await);
+        let config = Config::new(None).with_credential_drivers(["test-static"]);
+        let file = config_file(&format!(
+            "[openshell.gateway.credential_storage]\nkey_encryption_key_path = {}\n",
+            toml_path(&key_dir.path().join("key"))
+        ));
+        let runtime =
+            CredentialRuntime::from_config_file_with_store(&config, Some(&file), store.clone())
+                .await
+                .unwrap();
+        let handle = runtime
+            .store_internal_credential(StoreCredentialRequest {
+                provider: "sandbox-internal".into(),
+                credential_key: "SSH_HOST_PRIVATE_KEY".into(),
+                value: "private gateway fixture".into(),
+                workspace: "test".into(),
+                provider_id: "sandbox-id".into(),
+                object_id: "candidate-id".into(),
+                existing_handle: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(handle.driver, DbCredstoreCredentialDriver::NAME);
+        assert_eq!(runtime.stored_credential_count(), Some(0));
+        let records = store
+            .list_by_type(DbCredstoreCredentialDriver::OBJECT_TYPE, 10, 0)
+            .await
+            .unwrap();
+        assert_eq!(records.len(), 1);
+        assert!(!String::from_utf8_lossy(&records[0].payload).contains("private gateway fixture"));
+        let provider = Provider {
+            metadata: Some(openshell_core::proto::ObjectMeta {
+                name: "sandbox-internal".into(),
+                ..Default::default()
+            }),
+            credential_handles: HashMap::from([("SSH_HOST_PRIVATE_KEY".into(), handle)]),
+            ..Default::default()
+        };
+        let reloaded = CredentialRuntime::from_config_file_with_store(&config, Some(&file), store)
+            .await
+            .unwrap();
+        assert_eq!(
+            reloaded
+                .resolve_provider_handles(&provider, 0)
+                .await
+                .unwrap()
+                .values["SSH_HOST_PRIVATE_KEY"],
+            "private gateway fixture"
+        );
+        let provider_handles = runtime
+            .store_provider_credentials(
+                "provider",
+                "test",
+                "provider-id",
+                &HashMap::from([("TOKEN".into(), "provider fixture".into())]),
+                &HashMap::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(provider_handles["TOKEN"].driver, "test-static");
+        let refresh = runtime
+            .store_refresh_material_with_object_id(
+                RefreshMaterialScope {
+                    provider_name: "provider",
+                    workspace: "test",
+                    provider_id: "provider-id",
+                    credential_key: "TOKEN",
+                },
+                "refresh-id",
+                &HashMap::from([("refresh_token".into(), "refresh fixture".into())]),
+                &HashMap::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refresh["refresh_token"].driver, "test-static");
+        assert_eq!(runtime.stored_credential_count(), Some(2));
     }
 
     #[tokio::test]

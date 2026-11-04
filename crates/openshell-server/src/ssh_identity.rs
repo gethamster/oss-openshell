@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use openshell_core::jwt::{SandboxLaunchAuthentication, SecretSshHostKey};
 use openshell_core::proto::Sandbox;
+use openshell_core::proto::credentials::v1::StoreCredentialRequest;
 use openshell_core::proto::datamodel::v1::{CredentialHandle, ObjectMeta, Provider};
 use openshell_core::{ObjectId as _, ObjectName as _, ObjectWorkspace as _};
 use prost::Message as _;
@@ -42,8 +43,9 @@ mod tests {
         let config = crate::Config::new(None)
             .with_credential_drivers(["test-static"])
             .with_default_credential_driver(Some("test-static"));
-        let credentials =
-            CredentialRuntime::from_config_with_store(&config, store.clone()).unwrap();
+        let credentials = CredentialRuntime::from_config_with_store(&config, store.clone())
+            .unwrap()
+            .with_test_internal_store();
         store.put_message(&sandbox("sandbox-a")).await.unwrap();
         SshIdentityStore::new(store, credentials)
     }
@@ -97,6 +99,36 @@ mod tests {
             .prepare(&mut sb.clone(), &mut authentication())
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn internal_ssh_identity_bypasses_the_provider_driver() {
+        let key_dir = tempfile::tempdir().unwrap();
+        let mut identities = fixture().await;
+        let config = crate::Config::new(None).with_credential_drivers(["test-static"]);
+        let file = toml::from_str(&format!(
+            "[openshell.gateway.credential_storage]\nkey_encryption_key_path = {:?}\n",
+            key_dir.path().join("key").to_str().unwrap()
+        ))
+        .unwrap();
+        identities.credentials = CredentialRuntime::from_config_file_with_store(
+            &config,
+            Some(&file),
+            identities.store.clone(),
+        )
+        .await
+        .unwrap();
+        let mut sb = sandbox("sandbox-a");
+        let mut auth = authentication();
+        identities.prepare(&mut sb, &mut auth).await.unwrap();
+        assert!(auth.supervisor.ssh_host_private_key.is_some());
+        let stored = identities.load(&sb).await.unwrap().unwrap();
+        let handle = CredentialHandle::decode(stored.credential_handle.as_slice()).unwrap();
+        assert_eq!(
+            handle.driver,
+            openshell_driver_db_credstore::DbCredstoreCredentialDriver::NAME
+        );
+        assert_eq!(identities.credentials.stored_credential_count(), Some(0));
     }
 
     #[tokio::test]
@@ -431,27 +463,26 @@ impl SshIdentityStore {
             .to_openssh(russh::keys::ssh_key::LineEnding::default())
             .map_err(|_| Status::internal("encode sandbox SSH host key failed"))?;
         let owner = Self::owner(sandbox, HashMap::new());
-        // A distinct candidate path is essential for K8s/Vault: losing a CAS
-        // must never overwrite or delete the winning candidate's credential.
+        // Each candidate needs independent material: losing a CAS must never
+        // overwrite or delete the winning candidate's credential.
         let candidate_id = uuid::Uuid::new_v4().to_string();
-        let handles = self
+        let handle = self
             .credentials
-            .store_provider_credentials_with_object_id(
-                owner.object_name(),
-                sandbox.object_workspace(),
-                sandbox.object_id(),
-                &candidate_id,
-                &HashMap::from([(CREDENTIAL_KEY.to_string(), private_key.to_string())]),
-                &HashMap::new(),
-            )
+            .store_internal_credential(StoreCredentialRequest {
+                provider: owner.object_name().to_string(),
+                workspace: sandbox.object_workspace().to_string(),
+                provider_id: sandbox.object_id().to_string(),
+                object_id: candidate_id.clone(),
+                credential_key: CREDENTIAL_KEY.to_string(),
+                value: private_key.to_string(),
+                existing_handle: None,
+            })
             .await?;
-        let handle = handles
-            .get(CREDENTIAL_KEY)
-            .ok_or_else(|| Status::internal("credential driver omitted sandbox SSH host key"))?;
         let identity = StoredIdentity {
             fingerprint: key.public_key().fingerprint(HashAlg::Sha256).to_string(),
             credential_handle: handle.encode_to_vec(),
         };
+        let handles = HashMap::from([(CREDENTIAL_KEY.to_string(), handle)]);
         let payload = serde_json::to_vec(&identity)
             .map_err(|_| Status::internal("encode sandbox SSH identity failed"))?;
         // Retain losing handles until cleanup succeeds, so deletion can retry
