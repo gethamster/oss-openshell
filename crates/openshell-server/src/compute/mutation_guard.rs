@@ -896,7 +896,7 @@ mod tests {
         const TIMEOUTS: &str = "openshell_server_mutation_lock_timeouts_total{scope=\"sandbox\"}";
         const ERRORS: &str = "openshell_server_mutation_lock_errors_total{scope=\"sandbox\"}";
         let metrics = MetricsCapture::install();
-        let url = crate::persistence::PostgresStore::refusing_url_for_tests().await;
+        let (url, _endpoint) = crate::persistence::PostgresStore::refusing_endpoint_for_tests();
         let store = crate::persistence::PostgresStore::connect_lazy_for_tests(&url, 1);
         let runtime =
             super::super::new_test_runtime_for_driver(Arc::new(Store::Postgres(store)), "test")
