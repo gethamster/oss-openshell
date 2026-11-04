@@ -1134,6 +1134,8 @@ replays without applying another update.
 
 Deleting a sandbox stops all processes, releases resources, and purges injected credentials.
 
+If cleanup fails and the sandbox remains `Deleting`, repeat the delete command to retry cleanup of that same sandbox. A failed retry preserves its deletion state and credentials until cleanup completes.
+
 The command can return while cleanup is pending. `deletion accepted` means the
 gateway started deletion; inspect the sandbox until it disappears if your next
 step requires completion. An already-absent sandbox is a successful no-op, but
