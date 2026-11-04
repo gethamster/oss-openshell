@@ -10,7 +10,6 @@ Gateway pod template shared by the StatefulSet and Deployment workload shapes.
 {{- if not (get $oidcRuntimeConfig "issuer") -}}{{- $oidcRuntimeConfig = .Values.server.oidc | default dict -}}{{- end -}}
 {{- $kubernetesRuntimeConfig := include "openshell.effectiveKubernetesConfig" . | fromYaml -}}
 {{- $spiffeSocketPath := get $kubernetesRuntimeConfig "provider_spiffe_workload_api_socket_path" -}}
-{{- $hasExternalCredentialDriver := or (eq (include "openshell.credentialDriverEnabled" (list . "kubernetes-secrets")) "true") (eq (include "openshell.credentialDriverEnabled" (list . "vault")) "true") -}}
 {{- $vaultCredentialDriverEnabled := eq (include "openshell.credentialDriverEnabled" (list . "vault")) "true" -}}
 {{- $credentialDrivers := .Values.credentialDrivers | default dict -}}
 {{- $vaultResources := get $credentialDrivers "vault" | default dict -}}
@@ -110,13 +109,11 @@ spec:
           value: /etc/openshell-tls/peer-client/tls.key
         {{- end }}
         {{- end }}
-        {{- if not $hasExternalCredentialDriver }}
         - name: {{ include "openshell.credentialStorageKeyEncryptionKeyEnvName" . }}
           valueFrom:
             secretKeyRef:
               name: {{ include "openshell.credentialStorageKeyEncryptionKeySecretName" . }}
               key: {{ include "openshell.credentialStorageKeyEncryptionKeySecretKey" . }}
-        {{- end }}
         {{- if .Values.server.externalDbSecret }}
         - name: OPENSHELL_DB_URL
           valueFrom:

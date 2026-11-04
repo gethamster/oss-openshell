@@ -239,14 +239,9 @@ Top-level lists represent TOML arrays of tables and preserve their YAML order. *
 {{- end -}}
 {{- $_ := set $config "openshell.credential_drivers.vault" $vaultConfig -}}
 {{- end -}}
-{{/* External credential drivers own their storage. Do not configure the
-chart-managed encrypted database store when any driver is selected: its KEK
-environment variable is intentionally not mounted in that mode. */}}
-{{- $configuredGateway := get $config "openshell.gateway" | default dict -}}
-{{- $configuredCredentialDrivers := get $configuredGateway "credential_drivers" | default list -}}
-{{- if gt (len $configuredCredentialDrivers) 0 -}}
-{{- $_ := unset $config "openshell.gateway.credential_storage" -}}
-{{- else if not (hasKey $config "openshell.gateway.credential_storage") -}}
+{{/* Gateway-internal SSH and launch material always use the encrypted DB store,
+even when a provider credential driver is selected. */}}
+{{- if not (hasKey $config "openshell.gateway.credential_storage") -}}
 {{- $_ := set $config "openshell.gateway.credential_storage" (dict "key_encryption_key_env" (include "openshell.credentialStorageKeyEncryptionKeyEnvName" .)) -}}
 {{- end -}}
 {{/* Kubernetes packaging owns host aliases. Do not permit a second runtime
