@@ -27,6 +27,11 @@ class OpenshellBuild:
                 .with_directory('/lib', runtime.directory('/lib')))
         if platform == 'linux/amd64':
             base = base.with_directory('/lib64', runtime.directory('/lib64'))
+        # QEMU cannot install guest seccomp filters. The enrolled Kata worker
+        # supplies the isolation boundary for this ARM64 build environment.
+        nix_config = 'experimental-features = nix-command flakes\nsandbox = false\n'
+        if platform == 'linux/arm64':
+            nix_config += 'filter-syscalls = false\n'
         return (base.with_mounted_cache('/nix', dag.cache_volume('openshell-nix-' + platform),
                                         source=base.directory('/nix'))
                 .with_mounted_cache('/cargo', dag.cache_volume('openshell-cargo'))
@@ -34,7 +39,7 @@ class OpenshellBuild:
                 .with_env_variable('CARGO_HOME', '/cargo').with_env_variable('CARGO_TARGET_DIR', '/target')
                 .with_env_variable('CARGO_BUILD_JOBS', '2').with_env_variable('CARGO_INCREMENTAL', '0')
                 .with_env_variable('OPENSHELL_VERSION', values['OPENSHELL_VERSION'])
-                .with_env_variable('NIX_CONFIG', 'experimental-features = nix-command flakes\nsandbox = false\n')
+                .with_env_variable('NIX_CONFIG', nix_config)
                 .with_directory('/source', source, exclude=['.git', 'target', 'dist-native'])
                 .with_workdir('/source'))
 
