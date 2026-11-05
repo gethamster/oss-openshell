@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Use the repository's locked Nix release toolchain on Foundry."""
 import json
 from typing import Annotated
@@ -32,10 +33,10 @@ class OpenShellBuild:
     async def test(self, platform: str, source: Annotated[dagger.Directory, DefaultPath('/')], variables: str = '{}') -> str:
         return await self.container(source, platform, variables).with_exec([
             'nix', 'develop', '.#release', '--no-write-lock-file', '--accept-flake-config',
-            '-c', 'uv', 'run', '--no-project', 'python', '.dagger/release.py', 'test']).stdout()
+            '-c', 'uv', 'run', '--no-project', '--python', 'python3', 'python', '.dagger/release.py', 'test']).stdout()
 
     @function
     def build(self, platform: str, source: Annotated[dagger.Directory, DefaultPath('/')], variables: str = '{}') -> dagger.Directory:
         return self.container(source, platform, variables).with_exec([
             'nix', 'develop', '.#release', '--no-write-lock-file', '--accept-flake-config',
-            '-c', 'uv', 'run', '--no-project', 'python', '.dagger/release.py', 'build']).directory('/source/dist-native')
+            '-c', 'uv', 'run', '--no-project', '--python', 'python3', 'python', '.dagger/release.py', 'build']).directory('/source/dist-native')

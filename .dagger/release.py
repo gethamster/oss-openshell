@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 #!/usr/bin/env python3
 """Run the existing auditable federation release checks and package retained binaries."""
 import gzip
@@ -40,8 +41,12 @@ def prepare():
 
 
 def test(gateway):
-    run(['cargo', 'test', '--locked', '--release', '--target', gateway, '-p', 'openshell-server', '--lib',
-         'auth::oidc::federation::tests'])
+    checked = subprocess.run(['cargo', 'test', '--locked', '--release', '--target', gateway,
+                              '-p', 'openshell-server', '--lib', 'auth::oidc::federation::tests'],
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=True)
+    print(checked.stdout, end='')
+    if not re.search(r'test result: ok\. [1-9][0-9]* passed; 0 failed;', checked.stdout):
+        raise ValueError('Federation contract tests did not execute')
     common = ['cargo', 'nextest', 'run', '--locked', '--release', '--profile', 'ci', '--target', gateway,
               '--lib', '--color', 'never', '--no-tests=fail']
     run([*common, '-p', 'openshell-driver-db-credstore'])

@@ -12,6 +12,8 @@
         "uv",
         "run",
         "--no-project",
+        "--python",
+        "python3",
         "python",
         ".dagger/release.py",
         "test"
@@ -29,6 +31,8 @@
       "uv",
       "run",
       "--no-project",
+        "--python",
+        "python3",
       "python",
       ".dagger/release.py",
       "build"

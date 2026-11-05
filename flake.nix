@@ -213,7 +213,7 @@
           release = pkgs.mkShellNoCC {
             inherit (commonDevShell) env;
             packages = with pkgs; [ rustToolchain cargo-auditable cargo-nextest
-              cmakeMinimal git pkg-config syft uv ];
+              cmakeMinimal git pkg-config python3 syft uv ];
           };
 
           # Crypto backend tests need native OpenSSL and Cargo's symbol-prefixed
