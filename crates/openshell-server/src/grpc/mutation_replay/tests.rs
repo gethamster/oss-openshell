@@ -870,7 +870,7 @@ async fn reaper_deletes_only_expired_resolved_admissions() {
 
 async fn exercise_reaper(state: &Arc<ServerState>) {
     let fresh = create(&format!(
-        "reaper-fresh-{}",
+        "reaper-{}",
         &uuid::Uuid::new_v4().simple().to_string()[..8]
     ));
     run(state, authed_request(fresh.clone())).await.unwrap();
