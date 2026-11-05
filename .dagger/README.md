@@ -8,7 +8,9 @@ Linux workers use the pinned Nix image and this repository's `flake.lock`, Rust
 toolchain, GNU sysroots and musl CLI targets. The release shell realizes only
 the current host platform’s CLI and gateway sysroots; the full development shell
 continues to expose every cross target. The native macOS ARM64 worker needs
-Nix installed and uses `.dagger/native.json` with the same release shell. The
+Nix installed and uses `.dagger/native.json` with the same release shell. Each
+build keeps a Nix profile in its working directory so garbage collection retains
+the toolchain until that directory is retired. The
 recipe preserves the issuer-federation and credential-isolation checks, builds
 each auditable binary once, verifies its embedded Cargo metadata with Syft, and
 retains its SBOM and deterministic archive. Both license files are included.
