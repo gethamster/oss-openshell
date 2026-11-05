@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "checks": {
+    "test": [
+      [
+        "nix",
+        "develop",
+        ".#release",
+        "--no-write-lock-file",
+        "--accept-flake-config",
+        "-c",
+        "uv",
+        "run",
+        "--no-project",
+        "python",
+        ".dagger/release.py",
+        "test"
+      ]
+    ]
+  },
+  "build": [
+    [
+      "nix",
+      "develop",
+      ".#release",
+      "--no-write-lock-file",
+      "--accept-flake-config",
+      "-c",
+      "uv",
+      "run",
+      "--no-project",
+      "python",
+      ".dagger/release.py",
+      "build"
+    ]
+  ],
+  "artifacts": "dist-native"
+}
