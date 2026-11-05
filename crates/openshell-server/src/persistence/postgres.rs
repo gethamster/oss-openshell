@@ -965,8 +965,10 @@ RETURNING resource_version, created_at_ms, updated_at_ms
         payload: &[u8],
         labels: Option<&str>,
         max_count: u64,
+        counted_label: Option<(&str, &str)>,
     ) -> PersistenceResult<Option<WriteResult>> {
         let now_ms = current_time_ms();
+        let (label_key, label_value) = counted_label.unzip();
         let labels_jsonb: Option<serde_json::Value> = labels
             .map(serde_json::from_str)
             .transpose()
@@ -981,10 +983,13 @@ RETURNING resource_version, created_at_ms, updated_at_ms
             .map_err(|e| map_db_error(&e))?;
 
         let row: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM objects WHERE object_type = $1 AND workspace = $2",
+            "SELECT COUNT(*) FROM objects WHERE object_type = $1 AND workspace = $2 \
+             AND ($3::text IS NULL OR labels ->> $3 = $4)",
         )
         .bind(object_type)
         .bind(workspace)
+        .bind(label_key)
+        .bind(label_value)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| map_db_error(&e))?;

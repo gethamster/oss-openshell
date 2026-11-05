@@ -1190,6 +1190,7 @@ pub(super) async fn handle_create_sandbox_template(
             &resolved.encode_to_vec(),
             labels_json.as_deref(),
             u64::from(MAX_TEMPLATES_PER_WORKSPACE),
+            None,
         )
         .await;
     let write = match write {

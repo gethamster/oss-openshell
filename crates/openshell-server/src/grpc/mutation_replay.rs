@@ -4,11 +4,15 @@
 //! Explicitly opted-in unary mutations. This is an admission fence, not a lease:
 //! an owner that cannot persist success leaves an unresolved claim forever.
 //! Each adapter explicitly approves its authorization and replay representation.
+//!
+//! Only unresolved claims count toward the per-caller limit. Resolved claims
+//! stay replayable for [`SUCCESS_TTL_MS`]; a background reaper then deletes them.
 
 #![allow(clippy::result_large_err)]
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, LazyLock};
+use std::time::Duration;
 
 use hmac::{Hmac, Mac};
 use openshell_core::proto::{
@@ -34,12 +38,23 @@ use crate::auth::workspace_authz::{
     MinWorkspaceRole, authorize_workspace, require_platform_admin, selected_workspace_name,
 };
 use crate::persistence::{
-    ObjectType, PersistenceError, SetResourceVersion, Store, WriteCondition, current_time_ms,
+    ObjectCursor, ObjectType, PersistenceError, SetResourceVersion, Store, WriteCondition,
+    current_time_ms,
 };
 
 const OBJECT_TYPE: &str = "mutation_admission_v1";
 const SUCCESS_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+/// Upper bound on unresolved (in-flight or uncertain) claims per caller.
 const MAX_ADMISSIONS_PER_CALLER: u32 = 1000;
+/// Unresolved claims carry this label; completion clears it. The per-caller
+/// limit counts only labeled rows, so resolved history never refuses work.
+const UNRESOLVED_LABEL: (&str, &str) = ("openshell.io/admission-state", "unresolved");
+const UNRESOLVED_LABELS: &str = r#"{"openshell.io/admission-state":"unresolved"}"#;
+/// How often the reaper deletes resolved claims past their replay TTL.
+pub const REAPER_INTERVAL: Duration = Duration::from_mins(10);
+const REAPER_PAGE_SIZE: u32 = 500;
+/// Bound one sweep; the next sweep resumes where this one stopped.
+const REAPER_MAX_PAGES: usize = 20;
 // Bound work detached from request cancellation across all service instances.
 static EXECUTORS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(64)));
 static DESCRIPTORS: LazyLock<DescriptorPool> = LazyLock::new(|| {
@@ -280,11 +295,7 @@ async fn execute_owned<M: Mutation>(
             if previous.format_version != 1 {
                 return Err(replay_unavailable());
             }
-            if previous.success.is_some()
-                && previous.completed_at_ms.is_some_and(|completed| {
-                    current_time_ms() >= completed.saturating_add(SUCCESS_TTL_MS)
-                })
-            {
+            if expired_success(&previous, current_time_ms()) {
                 match state
                     .store
                     .delete_if(OBJECT_TYPE, &row.id, row.resource_version)
@@ -334,18 +345,16 @@ async fn execute_owned<M: Mutation>(
                 key,
                 bucket,
                 &payload,
-                None,
+                Some(UNRESOLVED_LABELS),
                 u64::from(MAX_ADMISSIONS_PER_CALLER),
+                Some(UNRESOLVED_LABEL),
             )
             .await;
         let version = match write {
             Ok(Some(write)) => write.resource_version,
             Ok(None) => {
-                if prune_expired(&state.store, bucket).await? {
-                    continue;
-                }
                 return Err(Status::resource_exhausted(
-                    "caller has reached the durable mutation admission limit; unresolved requests require reconciliation",
+                    "caller has reached the limit of unresolved mutation admissions; unresolved requests require reconciliation",
                 ));
             }
             Err(PersistenceError::UniqueViolation { .. } | PersistenceError::Conflict { .. }) => {
@@ -420,6 +429,7 @@ impl Completion {
         if payload.len() > 64 * 1024 {
             return Err(uncertain());
         }
+        // No labels: a resolved claim no longer counts toward the caller limit.
         self.store
             .put_if(
                 OBJECT_TYPE,
@@ -436,34 +446,62 @@ impl Completion {
     }
 }
 
-async fn prune_expired(store: &Store, bucket: &str) -> Result<bool, Status> {
-    // The bucket is atomically bounded, so this scan cannot grow without limit.
-    let rows = store
-        .list(OBJECT_TYPE, bucket, MAX_ADMISSIONS_PER_CALLER, 0)
-        .await
-        .map_err(storage_error)?;
-    let mut removed = false;
-    for row in rows {
-        let Ok(admission) = serde_json::from_slice::<Admission>(&row.payload) else {
-            continue;
-        };
-        if admission.format_version == 1
-            && admission.success.is_some()
-            && admission.completed_at_ms.is_some_and(|completed| {
-                current_time_ms() >= completed.saturating_add(SUCCESS_TTL_MS)
-            })
-        {
-            match store
-                .delete_if(OBJECT_TYPE, &row.id, row.resource_version)
-                .await
-            {
-                Ok(deleted) => removed |= deleted,
-                Err(PersistenceError::Conflict { .. }) => {}
-                Err(error) => return Err(storage_error(error)),
+fn expired_success(admission: &Admission, now_ms: i64) -> bool {
+    admission.format_version == 1
+        && admission.success.is_some()
+        && admission
+            .completed_at_ms
+            .is_some_and(|completed| now_ms >= completed.saturating_add(SUCCESS_TTL_MS))
+}
+
+/// Periodically delete resolved claims whose replay window has ended.
+/// Unresolved claims are never deleted: their effects are uncertain.
+pub fn spawn_admission_reaper(store: Arc<Store>, interval: Duration) {
+    tokio::spawn(async move {
+        let mut cursor = None;
+        loop {
+            tokio::time::sleep(interval).await;
+            match reap_expired_admissions(&store, cursor.take()).await {
+                Ok(next) => cursor = next,
+                Err(error) => tracing::warn!(%error, "mutation admission reaper sweep failed"),
             }
         }
+    });
+}
+
+/// Scan at most [`REAPER_MAX_PAGES`] pages in creation order. Return the
+/// cursor to resume from when the bound stopped the sweep early.
+async fn reap_expired_admissions(
+    store: &Store,
+    mut cursor: Option<ObjectCursor>,
+) -> Result<Option<ObjectCursor>, PersistenceError> {
+    let now_ms = current_time_ms();
+    let mut deleted = 0_u64;
+    for _ in 0..REAPER_MAX_PAGES {
+        let rows = store
+            .list_by_type_after(OBJECT_TYPE, cursor.as_ref(), REAPER_PAGE_SIZE)
+            .await?;
+        let full_page = rows.len() == REAPER_PAGE_SIZE as usize;
+        cursor = rows.last().map(ObjectCursor::from);
+        let expired: Vec<String> = rows
+            .into_iter()
+            .filter(|row| {
+                serde_json::from_slice::<Admission>(&row.payload)
+                    .is_ok_and(|admission| expired_success(&admission, now_ms))
+            })
+            .map(|row| row.id)
+            .collect();
+        // A resolved claim is never written again, so deletion by id is safe.
+        deleted += store.delete_many(OBJECT_TYPE, &expired).await?;
+        if !full_page {
+            cursor = None;
+            break;
+        }
     }
-    Ok(removed)
+    if deleted > 0 {
+        tracing::info!(deleted, "mutation admission reaper sweep complete");
+    }
+    Ok(cursor)
 }
 
 fn validate_request_id(value: &str) -> Result<String, Status> {

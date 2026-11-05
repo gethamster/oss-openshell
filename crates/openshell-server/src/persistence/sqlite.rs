@@ -746,6 +746,7 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, 1)
         payload: &[u8],
         labels: Option<&str>,
         max_count: u64,
+        counted_label: Option<(&str, &str)>,
     ) -> PersistenceResult<Option<WriteResult>> {
         let now_ms = current_time_ms();
         let mut tx = self
@@ -754,14 +755,20 @@ VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8, 1)
             .await
             .map_err(|e| map_db_error(&e))?;
 
+        let (label_path, label_value) = counted_label
+            .map(|(key, value)| (format!("$.\"{}\"", key.replace('"', "\\\"")), value))
+            .unzip();
         let row: (i64,) = sqlx::query_as(
             r#"
 SELECT COUNT(*) FROM "objects"
 WHERE "object_type" = ?1 AND "workspace" = ?2
+  AND (?3 IS NULL OR json_extract("labels", ?3) = ?4)
 "#,
         )
         .bind(object_type)
         .bind(workspace)
+        .bind(label_path)
+        .bind(label_value)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| map_db_error(&e))?;
