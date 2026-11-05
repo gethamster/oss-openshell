@@ -1,4 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Hamster
 # SPDX-License-Identifier: Apache-2.0
+
 """Use the repository's locked Nix release toolchain on Foundry."""
 import json
 from typing import Annotated

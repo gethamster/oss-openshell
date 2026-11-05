@@ -1,4 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Hamster
 # SPDX-License-Identifier: Apache-2.0
+
 #!/usr/bin/env python3
 """Run the existing auditable federation release checks and package retained binaries."""
 import gzip

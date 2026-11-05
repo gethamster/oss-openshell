@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Hamster
+# SPDX-License-Identifier: Apache-2.0
+
 [project]
 name = "openshell-build"
 version = "0.1.0"

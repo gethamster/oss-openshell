@@ -1,4 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Hamster
 # SPDX-License-Identifier: Apache-2.0
+
 """The release stamp must not resolve or change external dependencies."""
 import importlib.util
 import os
