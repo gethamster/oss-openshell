@@ -1123,6 +1123,10 @@ pub(crate) async fn run_server(
         shutdown_rx.clone(),
     );
     ssh_sessions::spawn_session_reaper(store.clone(), Duration::from_hours(1));
+    grpc::mutation_replay::spawn_admission_reaper(
+        store.clone(),
+        grpc::mutation_replay::REAPER_INTERVAL,
+    );
     supervisor_session::spawn_relay_reaper(state.clone(), Duration::from_secs(30));
     provider_profile_sources::spawn_refresh(state.clone());
     provider_refresh::spawn_refresh_worker(state.clone(), Duration::from_mins(1));

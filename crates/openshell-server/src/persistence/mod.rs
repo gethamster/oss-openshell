@@ -717,6 +717,9 @@ impl Store {
     /// Atomically insert a named object only if its workspace has fewer than
     /// `max_count` objects of the same type.
     ///
+    /// With `counted_label = Some((key, value))`, only objects whose label
+    /// `key` equals `value` count toward `max_count`.
+    ///
     /// Returns `Ok(None)` when the quota is already full. A duplicate id or
     /// `(object_type, workspace, name)` still returns
     /// [`PersistenceError::UniqueViolation`].
@@ -736,6 +739,7 @@ impl Store {
         payload: &[u8],
         labels: Option<&str>,
         max_count: u64,
+        counted_label: Option<(&str, &str)>,
     ) -> PersistenceResult<Option<WriteResult>> {
         store_dispatch_traced!(self.create_if_workspace_count_below(
             object_type,
@@ -744,7 +748,8 @@ impl Store {
             workspace,
             payload,
             labels,
-            max_count
+            max_count,
+            counted_label
         ))
     }
 

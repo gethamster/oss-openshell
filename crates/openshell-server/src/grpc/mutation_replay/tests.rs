@@ -228,6 +228,8 @@ async fn exercise_backend(url: &str) {
         "REQUEST_REPLAY_UNAVAILABLE"
     );
     exercise_expiry_and_uncertainty(&restarted).await;
+    exercise_reaper(&restarted).await;
+    exercise_counted_label(&restarted.store).await;
     ordinary::tests::exercise_protected_backend(url).await;
 }
 
@@ -484,7 +486,15 @@ async fn exercise_expiry_and_uncertainty(state: &Arc<ServerState>) {
         reason(&run(state, authed_request(req)).await.unwrap_err()),
         "REQUEST_OUTCOME_UNCERTAIN"
     );
-    assert!(!prune_expired(&state.store, &row.workspace).await.unwrap());
+    reap_expired_admissions(&state.store, None).await.unwrap();
+    assert!(
+        state
+            .store
+            .get(OBJECT_TYPE, &pending.id)
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 #[tokio::test]
@@ -732,8 +742,49 @@ async fn cancellation_keeps_owned_work_and_duplicate_cannot_take_over() {
     assert_eq!(control.calls.load(Ordering::SeqCst), 1);
 }
 
+fn admission(success: Option<Success>, completed_at_ms: Option<i64>) -> Vec<u8> {
+    serde_json::to_vec(&Admission {
+        protection: None,
+        format_version: 1,
+        payload_hash: "unused".into(),
+        workspace_id: None,
+        target_id: None,
+        success,
+        completed_at_ms,
+    })
+    .unwrap()
+}
+
+/// Insert `count` admission rows directly into a caller bucket.
+async fn insert_admissions(
+    store: &Store,
+    bucket: &str,
+    prefix: &str,
+    count: u32,
+    payload: &[u8],
+    labels: Option<&str>,
+) {
+    for i in 0..count {
+        let id = format!("{prefix}-{i}");
+        store
+            .create_if_workspace_count_below(
+                OBJECT_TYPE,
+                &id,
+                &id,
+                bucket,
+                payload,
+                labels,
+                u64::MAX,
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}
+
 #[tokio::test]
-async fn quota_fails_closed_but_replays_and_expired_success_cleanup_still_work() {
+async fn limit_counts_only_unresolved_admissions() {
     let state = test_server_state().await;
     let req = create("quota-replay");
     run(&state, authed_request(req.clone())).await.unwrap();
@@ -743,42 +794,43 @@ async fn quota_fails_closed_but_replays_and_expired_success_cleanup_still_work()
         .await
         .unwrap()
         .remove(0);
-    let pending = Admission {
-        protection: None,
-        format_version: 1,
-        payload_hash: "unused".into(),
-        workspace_id: None,
-        target_id: None,
-        success: None,
-        completed_at_ms: None,
-    };
-    let payload = serde_json::to_vec(&pending).unwrap();
-    for i in 1..MAX_ADMISSIONS_PER_CALLER - 1 {
-        let id = format!("quota-{i}");
-        state
-            .store
-            .create_if_workspace_count_below(
-                OBJECT_TYPE,
-                &id,
-                &id,
-                &original.workspace,
-                &payload,
-                None,
-                u64::from(MAX_ADMISSIONS_PER_CALLER),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-    }
-    let (left, right) = tokio::join!(
-        run(&state, authed_request(create("quota-race-a"))),
-        run(&state, authed_request(create("quota-race-b")))
+    let bucket = original.workspace.clone();
+    assert!(
+        !original
+            .labels
+            .unwrap_or_default()
+            .contains(UNRESOLVED_LABEL.1),
+        "completion clears the unresolved label"
     );
-    assert_eq!(usize::from(left.is_ok()) + usize::from(right.is_ok()), 1);
-    assert_eq!(
-        left.err().or_else(|| right.err()).unwrap().code(),
-        Code::ResourceExhausted
+
+    // More resolved admissions than the limit never refuse new work.
+    let resolved = admission(
+        Some(Success::Deletion { outcome: 0 }),
+        Some(current_time_ms()),
     );
+    insert_admissions(
+        &state.store,
+        &bucket,
+        "resolved",
+        MAX_ADMISSIONS_PER_CALLER,
+        &resolved,
+        None,
+    )
+    .await;
+    run(&state, authed_request(create("after-resolved")))
+        .await
+        .unwrap();
+
+    // The limit still refuses work when unresolved admissions reach it.
+    insert_admissions(
+        &state.store,
+        &bucket,
+        "unresolved",
+        MAX_ADMISSIONS_PER_CALLER,
+        &admission(None, None),
+        Some(UNRESOLVED_LABELS),
+    )
+    .await;
     let new_req = create("quota-new");
     assert_eq!(
         run(&state, authed_request(new_req.clone()))
@@ -795,39 +847,127 @@ async fn quota_fails_closed_but_replays_and_expired_success_cleanup_still_work()
             .unwrap()
             .is_none()
     );
-    run(&state, authed_request(req)).await.unwrap();
-    let mut expired: Admission = serde_json::from_slice(&original.payload).unwrap();
-    expired.completed_at_ms = Some(0);
-    state
-        .store
-        .put_if(
-            OBJECT_TYPE,
-            &original.id,
-            &original.name,
-            &original.workspace,
-            &serde_json::to_vec(&expired).unwrap(),
-            None,
-            WriteCondition::MatchResourceVersion(original.resource_version),
-        )
-        .await
-        .unwrap();
-    run(&state, authed_request(new_req)).await.unwrap();
-    assert_eq!(
-        state
-            .store
-            .count_in_workspace(OBJECT_TYPE, &original.workspace)
-            .await
-            .unwrap(),
-        u64::from(MAX_ADMISSIONS_PER_CALLER)
-    );
+    // Replay of a resolved admission does not need a new claim.
+    let replay = run(&state, authed_request(req)).await.unwrap();
+    assert_eq!(replay.metadata().get("openshell-replayed").unwrap(), "true");
+
+    // One reconciled claim frees one slot.
     assert!(
         state
             .store
-            .get(OBJECT_TYPE, "quota-1")
+            .delete(OBJECT_TYPE, "unresolved-0")
+            .await
+            .unwrap()
+    );
+    run(&state, authed_request(new_req)).await.unwrap();
+}
+
+#[tokio::test]
+async fn reaper_deletes_only_expired_resolved_admissions() {
+    let state = test_server_state().await;
+    exercise_reaper(&state).await;
+}
+
+async fn exercise_reaper(state: &Arc<ServerState>) {
+    let fresh = create(&format!(
+        "reaper-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    ));
+    run(state, authed_request(fresh.clone())).await.unwrap();
+    let fresh_hash = fingerprint(&fresh).unwrap();
+    let fresh_row = state
+        .store
+        .list_by_type_after(OBJECT_TYPE, None, 1000)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|row| {
+            serde_json::from_slice::<Admission>(&row.payload)
+                .unwrap()
+                .payload_hash
+                == fresh_hash
+        })
+        .unwrap();
+    let bucket = fresh_row.workspace.clone();
+    let prefix = uuid::Uuid::new_v4().simple().to_string();
+    let expired = admission(Some(Success::Deletion { outcome: 0 }), Some(0));
+    let stale_pending = admission(None, Some(0));
+    insert_admissions(
+        &state.store,
+        &bucket,
+        &format!("{prefix}-expired"),
+        3,
+        &expired,
+        None,
+    )
+    .await;
+    insert_admissions(
+        &state.store,
+        &bucket,
+        &format!("{prefix}-pending"),
+        2,
+        &stale_pending,
+        Some(UNRESOLVED_LABELS),
+    )
+    .await;
+
+    assert!(
+        reap_expired_admissions(&state.store, None)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    for i in 0..3 {
+        let id = format!("{prefix}-expired-{i}");
+        assert!(state.store.get(OBJECT_TYPE, &id).await.unwrap().is_none());
+    }
+    for i in 0..2 {
+        let id = format!("{prefix}-pending-{i}");
+        assert!(state.store.get(OBJECT_TYPE, &id).await.unwrap().is_some());
+    }
+    assert!(
+        state
+            .store
+            .get(OBJECT_TYPE, &fresh_row.id)
             .await
             .unwrap()
             .is_some()
     );
+    let replay = run(state, authed_request(fresh)).await.unwrap();
+    assert_eq!(replay.metadata().get("openshell-replayed").unwrap(), "true");
+}
+
+/// The store counts only rows that carry the counted label.
+async fn exercise_counted_label(store: &Store) {
+    let bucket = format!("_mutation/{}", uuid::Uuid::new_v4().simple());
+    let create = |id: String, labels: Option<&'static str>| {
+        let bucket = bucket.clone();
+        async move {
+            store
+                .create_if_workspace_count_below(
+                    OBJECT_TYPE,
+                    &id,
+                    &id,
+                    &bucket,
+                    b"{}",
+                    labels,
+                    2,
+                    Some(UNRESOLVED_LABEL),
+                )
+                .await
+                .unwrap()
+        }
+    };
+    let id = || uuid::Uuid::new_v4().to_string();
+    for _ in 0..3 {
+        assert!(create(id(), None).await.is_some());
+    }
+    assert!(create(id(), Some(r#"{"other":"label"}"#)).await.is_some());
+    assert!(create(id(), Some(UNRESOLVED_LABELS)).await.is_some());
+    assert!(create(id(), Some(UNRESOLVED_LABELS)).await.is_some());
+    assert!(create(id(), Some(UNRESOLVED_LABELS)).await.is_none());
+    assert!(create(id(), None).await.is_none());
 }
 
 #[tokio::test]
