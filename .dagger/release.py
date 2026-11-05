@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import tomllib
 
 
 def run(arguments):
@@ -36,6 +37,24 @@ def prepare():
     if count != 1:
         raise ValueError('Workspace version does not match the release input')
     manifest.write_text(text)
+    # Keep every external dependency pinned while mirroring the version stamp
+    # into local workspace entries, so Cargo can retain --locked builds.
+    workspace = tomllib.loads(text)['workspace']
+    packages = set()
+    for member in workspace['members']:
+        for package_manifest in Path('.').glob(member + '/Cargo.toml'):
+            package = tomllib.loads(package_manifest.read_text())['package']
+            if isinstance(package.get('version'), dict) and package['version'].get('workspace') is True:
+                packages.add(package['name'])
+    lock = Path('Cargo.lock')
+    blocks = lock.read_text().split('[[package]]')
+    for index, block in enumerate(blocks[1:], 1):
+        entry = tomllib.loads('[[package]]' + block)['package'][0]
+        if entry['name'] in packages and 'source' not in entry:
+            if entry['version'] not in ('0.0.0', version):
+                raise ValueError('Workspace lock version differs from release input')
+            blocks[index] = re.sub(r'(?m)^version = ".*"$', 'version = "' + version + '"', block, count=1)
+    lock.write_text('[[package]]'.join(blocks))
     os.environ.update(GIT_DIR='/nonexistent', OPENSHELL_IMAGE_TAG='0.1.6')
     return version
 
