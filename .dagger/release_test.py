@@ -3,6 +3,8 @@
 
 """The release stamp must not resolve or change external dependencies."""
 import importlib.util
+import io
+import subprocess
 import os
 from pathlib import Path
 import tempfile
@@ -33,6 +35,16 @@ class VersionTests(unittest.TestCase):
                 self.assertIn(b'version = "0.1.6-system.3"', once)
             finally:
                 os.chdir(before)
+
+
+class DiagnosticTests(unittest.TestCase):
+    def test_failed_check_keeps_the_compiler_output(self):
+        result = subprocess.CompletedProcess(['cargo', 'test'], 101, stdout='specific compiler failure\n')
+        output = io.StringIO()
+        with patch.object(recipe.subprocess, 'run', return_value=result), patch('sys.stdout', output):
+            with self.assertRaises(subprocess.CalledProcessError):
+                recipe.test('x86_64-unknown-linux-gnu')
+        self.assertIn('specific compiler failure', output.getvalue())
 
 
 if __name__ == '__main__':

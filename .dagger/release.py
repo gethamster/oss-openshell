@@ -64,8 +64,9 @@ def prepare():
 def test(gateway):
     checked = subprocess.run(['cargo', 'test', '--locked', '--release', '--target', gateway,
                               '-p', 'openshell-server', '--lib', 'auth::oidc::federation::tests'],
-                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=True)
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=False)
     print(checked.stdout, end='')
+    checked.check_returncode()
     if not re.search(r'test result: ok\. [1-9][0-9]* passed; 0 failed;', checked.stdout):
         raise ValueError('Federation contract tests did not execute')
     common = ['cargo', 'nextest', 'run', '--locked', '--release', '--profile', 'ci', '--target', gateway,
