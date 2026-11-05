@@ -8,6 +8,7 @@ from typing import Annotated
 import dagger
 from dagger import DefaultPath, dag, function, object_type
 
+UBUNTU = 'ubuntu@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11'
 NIX = 'nixos/nix@sha256:29fc5fe207f159ceb0143c25c19c774062fee02ce5eda118f3067547b3054894'
 
 
@@ -19,7 +20,13 @@ class OpenshellBuild:
         values = json.loads(variables)
         if set(values) != {'OPENSHELL_VERSION'}:
             raise ValueError('Select the exact OpenShell release version')
-        base = dag.container(platform=dagger.Platform(platform)).from_(NIX)
+        runtime = dag.container(platform=dagger.Platform(platform)).from_(UBUNTU)
+        # The locked GNU linker emits conventional Linux interpreter paths,
+        # including for Cargo's host build scripts. Nix alone lacks those paths.
+        base = (dag.container(platform=dagger.Platform(platform)).from_(NIX)
+                .with_directory('/lib', runtime.directory('/lib')))
+        if platform == 'linux/amd64':
+            base = base.with_directory('/lib64', runtime.directory('/lib64'))
         return (base.with_mounted_cache('/nix', dag.cache_volume('openshell-nix-' + platform),
                                         source=base.directory('/nix'))
                 .with_mounted_cache('/cargo', dag.cache_volume('openshell-cargo'))
