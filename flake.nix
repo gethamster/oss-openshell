@@ -220,13 +220,28 @@
                   if pkgs.stdenv.hostPlatform.isDarwin then
                     [ toolchains.aarch64-darwin ]
                   else if pkgs.stdenv.hostPlatform.isAarch64 then
-                    [ toolchains.aarch64-musl toolchains.aarch64-gnu ]
+                    [
+                      toolchains.aarch64-musl
+                      toolchains.aarch64-gnu
+                    ]
                   else
-                    [ toolchains.x86_64-musl toolchains.x86_64-gnu ];
+                    [
+                      toolchains.x86_64-musl
+                      toolchains.x86_64-gnu
+                    ];
               in
               pkgs.lib.foldl' (env: toolchain: env // toolchain.env) { } selected;
-            packages = with pkgs; [ rustToolchain cargo-auditable cargo-nextest
-              cmakeMinimal git pkg-config python3 syft uv ];
+            packages = with pkgs; [
+              rustToolchain
+              cargo-auditable
+              cargo-nextest
+              cmakeMinimal
+              git
+              pkg-config
+              python3
+              syft
+              uv
+            ];
           };
 
           # Crypto backend tests need native OpenSSL and Cargo's symbol-prefixed
