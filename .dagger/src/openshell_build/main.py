@@ -46,11 +46,13 @@ class OpenshellBuild:
     @function
     async def test(self, platform: str, source: Annotated[dagger.Directory, DefaultPath('/')], variables: str = '{}') -> str:
         return await self.container(source, platform, variables).with_exec([
-            'nix', 'develop', '.#release', '--no-write-lock-file', '--accept-flake-config',
+            'nix', 'develop', '.#release', '--profile', '.nix-release-profile',
+            '--no-write-lock-file', '--accept-flake-config',
             '-c', 'uv', 'run', '--no-project', '--python', 'python3', 'python', '.dagger/release.py', 'test']).stdout()
 
     @function
     def build(self, platform: str, source: Annotated[dagger.Directory, DefaultPath('/')], variables: str = '{}') -> dagger.Directory:
         return self.container(source, platform, variables).with_exec([
-            'nix', 'develop', '.#release', '--no-write-lock-file', '--accept-flake-config',
+            'nix', 'develop', '.#release', '--profile', '.nix-release-profile',
+            '--no-write-lock-file', '--accept-flake-config',
             '-c', 'uv', 'run', '--no-project', '--python', 'python3', 'python', '.dagger/release.py', 'build']).directory('/source/dist-native')
