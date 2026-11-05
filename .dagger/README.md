@@ -5,7 +5,9 @@ controller. Set `OPENSHELL_VERSION` to the accepted `0.1.6-system.N` version in
 the controller configuration; that value is part of the build identity.
 
 Linux workers use the pinned Nix image and this repository's `flake.lock`, Rust
-toolchain, GNU sysroots and musl CLI targets. The native macOS ARM64 worker needs
+toolchain, GNU sysroots and musl CLI targets. The release shell realizes only
+the current host platform’s CLI and gateway sysroots; the full development shell
+continues to expose every cross target. The native macOS ARM64 worker needs
 Nix installed and uses `.dagger/native.json` with the same release shell. The
 recipe preserves the issuer-federation and credential-isolation checks, builds
 each auditable binary once, verifies its embedded Cargo metadata with Syft, and

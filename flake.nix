@@ -211,9 +211,37 @@
 
           # Managed releases retain the same compiler/sysroots and security checks.
           release = pkgs.mkShellNoCC {
-            inherit (commonDevShell) env;
-            packages = with pkgs; [ rustToolchain cargo-auditable cargo-nextest
-              cmakeMinimal git pkg-config python3 syft uv ];
+            # Evaluating a toolchain's environment realizes its sysroot. Release
+            # binaries only need the host's CLI and gateway targets; the full
+            # development shell retains all cross-compilation environments.
+            env =
+              let
+                selected =
+                  if pkgs.stdenv.hostPlatform.isDarwin then
+                    [ toolchains.aarch64-darwin ]
+                  else if pkgs.stdenv.hostPlatform.isAarch64 then
+                    [
+                      toolchains.aarch64-musl
+                      toolchains.aarch64-gnu
+                    ]
+                  else
+                    [
+                      toolchains.x86_64-musl
+                      toolchains.x86_64-gnu
+                    ];
+              in
+              pkgs.lib.foldl' (env: toolchain: env // toolchain.env) { } selected;
+            packages = with pkgs; [
+              rustToolchain
+              cargo-auditable
+              cargo-nextest
+              cmakeMinimal
+              git
+              pkg-config
+              python3
+              syft
+              uv
+            ];
           };
 
           # Crypto backend tests need native OpenSSL and Cargo's symbol-prefixed
