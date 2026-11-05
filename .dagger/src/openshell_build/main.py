@@ -12,7 +12,7 @@ NIX = 'nixos/nix@sha256:29fc5fe207f159ceb0143c25c19c774062fee02ce5eda118f3067547
 
 
 @object_type
-class OpenShellBuild:
+class OpenshellBuild:
     def container(self, source, platform, variables):
         if platform not in {'linux/amd64', 'linux/arm64'}:
             raise ValueError('macOS uses the enrolled native Nix worker')
