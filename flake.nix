@@ -209,6 +209,13 @@
         devShells = {
           default = pkgs.mkShellNoCC commonDevShell;
 
+          # Managed releases retain the same compiler/sysroots and security checks.
+          release = pkgs.mkShellNoCC {
+            inherit (commonDevShell) env;
+            packages = with pkgs; [ rustToolchain cargo-auditable cargo-nextest
+              cmakeMinimal git pkg-config python3 syft uv ];
+          };
+
           # Crypto backend tests need native OpenSSL and Cargo's symbol-prefixed
           # AWS-LC build. The release toolchains expose an unprefixed system
           # AWS-LC libcrypto/libssl that collides with OpenSSL when both link.
