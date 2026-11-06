@@ -5,5 +5,37 @@
   "checks": {
     "test": "test"
   },
-  "variables_argument": "variables"
+  "variables_argument": "variables",
+  "source_paths": [
+    ".cargo",
+    ".config",
+    ".dagger",
+    ".python-version",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "flake.nix",
+    "flake.lock",
+    "nix",
+    "crates",
+    "proto",
+    "python",
+    "sdk",
+    "providers",
+    "scripts",
+    "tasks",
+    "deploy",
+    "e2e",
+    "examples",
+    "tests",
+    "fern",
+    "about.toml",
+    "buf.yaml",
+    "pyproject.toml",
+    "uv.lock",
+    "LICENSE",
+    "LICENSE-UPSTREAM",
+    "THIRD-PARTY-NOTICES",
+    "dagger.json"
+  ]
 }
