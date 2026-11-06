@@ -37,7 +37,7 @@ class OpenshellBuild:
                 .with_mounted_cache('/cargo', dag.cache_volume('openshell-cargo'))
                 .with_mounted_cache('/target', dag.cache_volume('openshell-target-' + platform))
                 .with_env_variable('CARGO_HOME', '/cargo').with_env_variable('CARGO_TARGET_DIR', '/target')
-                .with_env_variable('CARGO_BUILD_JOBS', '2').with_env_variable('CARGO_INCREMENTAL', '0')
+                .with_env_variable('CARGO_INCREMENTAL', '1')
                 .with_env_variable('OPENSHELL_VERSION', values['OPENSHELL_VERSION'])
                 .with_env_variable('NIX_CONFIG', nix_config)
                 .with_directory('/source', source, exclude=['.git', 'target', 'dist-native'])
