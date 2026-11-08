@@ -24,4 +24,18 @@ pub trait ComputeDriver: compute_driver_server::ComputeDriver {
             "sandbox configuration updates are not supported by this driver",
         ))
     }
+
+    /// Wait until no lifecycle operation the driver accepted for the sandbox can
+    /// still change its resources. See `ComputeDriverOperationSettlement`.
+    async fn settle_sandbox_operations(
+        &self,
+        _request: tonic::Request<crate::proto::compute::v1::SettleSandboxOperationsRequest>,
+    ) -> Result<
+        tonic::Response<crate::proto::compute::v1::SettleSandboxOperationsResponse>,
+        tonic::Status,
+    > {
+        Err(tonic::Status::unimplemented(
+            "driver operation settlement is not supported by this driver",
+        ))
+    }
 }

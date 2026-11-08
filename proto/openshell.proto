@@ -4154,7 +4154,9 @@ message SandboxProvisioning {
   google.protobuf.Timestamp admission_start_time = 13;
   // An owned driver create/start future is still pending. Claimed before
   // dispatch and cleared on its actual success or error response. Monitor
-  // interruption, owner loss, and StopSandbox/NotFound do not clear it.
+  // interruption, owner loss, and StopSandbox/NotFound do not clear it. A
+  // single-replica gateway clears a claim left by an exited process only once
+  // a driver supporting operation settlement confirms the operation is over.
   // While set, cleanup cannot complete and retry/deletion remain blocked.
   // This does not strengthen a driver's transport-error settlement contract.
   bool driver_operation_pending = 14;

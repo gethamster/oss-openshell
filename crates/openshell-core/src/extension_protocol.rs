@@ -29,6 +29,10 @@ pub const COMPUTE_SUSPEND_RESUME: &str = "openshell.compute.suspend-resume";
 pub const COMPUTE_UPDATE_SANDBOX_CONFIGURATION: &str =
     "openshell.compute.update-sandbox-configuration";
 
+/// Driver implements `ComputeDriverOperationSettlement`: it can prove that no
+/// accepted lifecycle operation for a sandbox is still running.
+pub const COMPUTE_OPERATION_SETTLEMENT: &str = "openshell.compute.operation-settlement";
+
 const MAX_IMPLEMENTATION_NAME_BYTES: usize = 128;
 const MAX_IMPLEMENTATION_VERSION_BYTES: usize = 128;
 const MAX_CAPABILITY_BYTES: usize = 128;

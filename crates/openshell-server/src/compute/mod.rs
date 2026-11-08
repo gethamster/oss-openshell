@@ -685,6 +685,7 @@ impl AcquiredRemoteDriverEndpoint {
 struct RemoteComputeDriver {
     client: RemoteComputeDriverClient,
     configuration_updates_client: openshell_core::proto::compute::v1::compute_driver_configuration_updates_client::ComputeDriverConfigurationUpdatesClient<tonic::service::interceptor::InterceptedService<Channel, TraceContextInterceptor>>,
+    operation_settlement_client: openshell_core::proto::compute::v1::compute_driver_operation_settlement_client::ComputeDriverOperationSettlementClient<tonic::service::interceptor::InterceptedService<Channel, TraceContextInterceptor>>,
     admission_acknowledgement: Arc<StdMutex<Option<String>>>,
 }
 
@@ -696,7 +697,8 @@ impl RemoteComputeDriver {
     fn new(channel: Channel) -> Self {
         Self {
             client: ComputeDriverClient::with_interceptor(channel.clone(), TraceContextInterceptor),
-            configuration_updates_client: openshell_core::proto::compute::v1::compute_driver_configuration_updates_client::ComputeDriverConfigurationUpdatesClient::with_interceptor(channel, TraceContextInterceptor),
+            configuration_updates_client: openshell_core::proto::compute::v1::compute_driver_configuration_updates_client::ComputeDriverConfigurationUpdatesClient::with_interceptor(channel.clone(), TraceContextInterceptor),
+            operation_settlement_client: openshell_core::proto::compute::v1::compute_driver_operation_settlement_client::ComputeDriverOperationSettlementClient::with_interceptor(channel, TraceContextInterceptor),
             admission_acknowledgement: Arc::new(StdMutex::new(None)),
         }
     }
@@ -750,6 +752,19 @@ impl openshell_core::compute::ComputeDriver for RemoteComputeDriver {
         self.configuration_updates_client
             .clone()
             .update_sandbox_configuration(request)
+            .await
+    }
+
+    async fn settle_sandbox_operations(
+        &self,
+        request: Request<openshell_core::proto::compute::v1::SettleSandboxOperationsRequest>,
+    ) -> Result<
+        tonic::Response<openshell_core::proto::compute::v1::SettleSandboxOperationsResponse>,
+        Status,
+    > {
+        self.operation_settlement_client
+            .clone()
+            .settle_sandbox_operations(request)
             .await
     }
 }
@@ -911,6 +926,10 @@ pub struct ComputeRuntime {
     admission_acknowledgement: String,
     driver: TracedDriver,
     image_update_driver: Option<SharedComputeDriverConfigurationUpdates>,
+    /// Optional settlement registration; see `provisioning_operation`.
+    operation_settlement_driver: Option<SharedComputeDriverConfigurationUpdates>,
+    /// Driver operations claimed by this process and not yet settled.
+    owned_operations: Arc<provisioning_operation::OwnedOperations>,
     driver_info: ComputeDriverInfoSnapshot,
     telemetry_compute_driver: TelemetryComputeDriver,
     driver_process: Option<Arc<ManagedDriverProcess>>,
@@ -1029,6 +1048,8 @@ impl ComputeRuntime {
             isolation_backend: None,
             driver: TracedDriver::new(driver, driver_name),
             image_update_driver: None,
+            operation_settlement_driver: None,
+            owned_operations: Arc::default(),
             admission: openshell_core::resource_admission::DriverAdmissionConfig::default(),
             admission_acknowledgement: capabilities.resource_admission_policy,
             driver_info,
@@ -1182,7 +1203,19 @@ impl ComputeRuntime {
             supervisor_sessions,
         )
         .await
-        .map(|runtime| runtime.with_image_update_driver(Some(driver)))
+        .map(|runtime| {
+            runtime
+                .with_image_update_driver(Some(driver.clone()))
+                .with_operation_settlement_driver(Some(driver))
+        })
+    }
+
+    pub(crate) fn with_operation_settlement_driver(
+        mut self,
+        driver: Option<SharedComputeDriverConfigurationUpdates>,
+    ) -> Self {
+        self.operation_settlement_driver = driver;
+        self
     }
 
     pub(crate) fn with_image_update_driver(
@@ -4505,6 +4538,7 @@ impl ComputeRuntime {
                     continue;
                 }
             };
+            let sandbox = Box::pin(self.settle_orphaned_operation_at_startup(sandbox)).await;
             if self
                 .pending_driver_operation_blocks_cleanup(&sandbox)
                 .await?
@@ -5055,6 +5089,7 @@ impl ComputeRuntime {
         } else {
             Some(next_runtime_identity(&current).map_err(|status| status.to_string())?)
         };
+        let ownership = self.owned_operations.claim();
         let claimed = if already_claimed && sandbox_provisioning_attempt_id(&current).is_none() {
             current.clone()
         } else {
@@ -5071,7 +5106,7 @@ impl ComputeRuntime {
                         {
                             identity.write(&mut metadata.annotations);
                         }
-                        provisioning_operation::claim_record(sandbox);
+                        provisioning_operation::claim_record(sandbox, &ownership);
                         let status = sandbox.status.get_or_insert_with(Default::default);
                         set_next_restart_at_ms(status, 0);
                         upsert_ready_condition(
@@ -5107,50 +5142,50 @@ impl ComputeRuntime {
         // One detached worker owns STOP and START. Caller cancellation cannot
         // strand a raw START, and the monitor may release the local gate while
         // the durable pending flag still protects the unresolved operation.
-        let result = Box::pin(
-            self.await_claimed_provisioning_operation(&claimed, async move {
-                let request_id = operation_id.clone();
-                let request_name = operation_name.clone();
-                let stop = runtime
-                    .driver
-                    .call_owned(
-                        openshell_otel::rpc::STOP_SANDBOX,
-                        Some(&operation_id),
-                        move |driver| async move {
-                            driver
-                                .stop_sandbox(Request::new(StopSandboxRequest {
-                                    sandbox_id: request_id,
-                                    name: request_name,
-                                }))
-                                .await
-                        },
-                    )
-                    .await;
-                if let Err(status) = stop {
-                    return Ok(RestartOutcome::DriverError("stop", status));
-                }
-                runtime
-                    .cleanup_stopped_sandbox_sessions(&owned)
-                    .await
-                    .map_err(Status::internal)?;
-                let Some(armed) = runtime
-                    .arm_restart_readiness_watchdog(&owned)
-                    .await
-                    .map_err(Status::internal)?
-                else {
-                    return Ok(RestartOutcome::Superseded);
-                };
-                let authority = runtime.restart_authority.get().and_then(Option::as_deref);
-                let launch_authentication = runtime
-                    .encode_persisted_launch_authentication(authority, &armed)
-                    .await?;
-                let request = runtime.driver_start_request(
-                    &armed,
-                    launch_authentication,
-                    expected_runtime_identity,
-                )?;
-                let start =
+        let result =
+            Box::pin(
+                self.await_claimed_provisioning_operation(&claimed, ownership, async move {
+                    let request_id = operation_id.clone();
+                    let request_name = operation_name.clone();
+                    let stop = runtime
+                        .driver
+                        .call_owned(
+                            openshell_otel::rpc::STOP_SANDBOX,
+                            Some(&operation_id),
+                            move |driver| async move {
+                                driver
+                                    .stop_sandbox(Request::new(StopSandboxRequest {
+                                        sandbox_id: request_id,
+                                        name: request_name,
+                                    }))
+                                    .await
+                            },
+                        )
+                        .await;
+                    if let Err(status) = stop {
+                        return Ok(RestartOutcome::DriverError("stop", status));
+                    }
                     runtime
+                        .cleanup_stopped_sandbox_sessions(&owned)
+                        .await
+                        .map_err(Status::internal)?;
+                    let Some(armed) = runtime
+                        .arm_restart_readiness_watchdog(&owned)
+                        .await
+                        .map_err(Status::internal)?
+                    else {
+                        return Ok(RestartOutcome::Superseded);
+                    };
+                    let authority = runtime.restart_authority.get().and_then(Option::as_deref);
+                    let launch_authentication = runtime
+                        .encode_persisted_launch_authentication(authority, &armed)
+                        .await?;
+                    let request = runtime.driver_start_request(
+                        &armed,
+                        launch_authentication,
+                        expected_runtime_identity,
+                    )?;
+                    let start = runtime
                         .driver
                         .call_owned(
                             openshell_otel::rpc::START_SANDBOX,
@@ -5160,14 +5195,14 @@ impl ComputeRuntime {
                             },
                         )
                         .await;
-                Ok(match start {
-                    Ok(response) => RestartOutcome::Started(response.into_inner()),
-                    Err(status) => RestartOutcome::DriverError("start", status),
-                })
-            }),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+                    Ok(match start {
+                        Ok(response) => RestartOutcome::Started(response.into_inner()),
+                        Err(status) => RestartOutcome::DriverError("start", status),
+                    })
+                }),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
 
         let (outcome, settled) = result;
         let response = match outcome {
@@ -8596,6 +8631,8 @@ pub fn new_test_runtime_with_driver(
         isolation_backend: None,
         driver: TracedDriver::new(driver, "test".to_string()),
         image_update_driver: None,
+        operation_settlement_driver: None,
+        owned_operations: Arc::default(),
         admission: openshell_core::resource_admission::DriverAdmissionConfig {
             allow_driver_config: true,
             ..Default::default()
@@ -8641,6 +8678,7 @@ pub fn new_test_runtime_with_driver(
 #[cfg(test)]
 mod tests {
     mod error_recovery;
+    mod orphaned_operations;
     mod suspend_resume;
 
     use super::*;
@@ -9273,6 +9311,8 @@ mod tests {
         get_release: Semaphore,
         get_blocked: AtomicBool,
         get_outcome: TestMutex<ControlledGetOutcome>,
+        settle_calls: AtomicUsize,
+        settle_error: TestMutex<Option<Status>>,
     }
 
     impl ControlledDriver {
@@ -9324,6 +9364,8 @@ mod tests {
                 get_release: Semaphore::new(0),
                 get_blocked: AtomicBool::new(false),
                 get_outcome: TestMutex::new(ControlledGetOutcome::Missing),
+                settle_calls: AtomicUsize::new(0),
+                settle_error: TestMutex::new(None),
             })
         }
 
@@ -9480,7 +9522,26 @@ mod tests {
     }
 
     #[tonic::async_trait]
-    impl openshell_core::compute::ComputeDriver for ControlledDriver {}
+    impl openshell_core::compute::ComputeDriver for ControlledDriver {
+        async fn settle_sandbox_operations(
+            &self,
+            _request: Request<openshell_core::proto::compute::v1::SettleSandboxOperationsRequest>,
+        ) -> Result<
+            tonic::Response<openshell_core::proto::compute::v1::SettleSandboxOperationsResponse>,
+            Status,
+        > {
+            self.settle_calls.fetch_add(1, Ordering::SeqCst);
+            let error = self.settle_error.lock().unwrap().clone();
+            error.map_or_else(
+                || {
+                    Ok(tonic::Response::new(
+                        openshell_core::proto::compute::v1::SettleSandboxOperationsResponse {},
+                    ))
+                },
+                Err,
+            )
+        }
+    }
 
     #[tonic::async_trait]
     impl ComputeDriver for ControlledDriver {
@@ -9799,6 +9860,8 @@ mod tests {
             isolation_backend: None,
             driver: TracedDriver::new(driver, "test-driver".to_string()),
             image_update_driver: None,
+            operation_settlement_driver: None,
+            owned_operations: Arc::default(),
             admission: openshell_core::resource_admission::DriverAdmissionConfig {
                 allow_driver_config: true,
                 ..Default::default()

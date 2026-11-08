@@ -107,6 +107,11 @@ pub mod rpc {
         method: "UpdateSandboxConfiguration",
         operation: "openshell.compute.v1.ComputeDriverConfigurationUpdates/UpdateSandboxConfiguration",
     };
+    pub const SETTLE_SANDBOX_OPERATIONS: ComputeDriverRpc = ComputeDriverRpc {
+        service: "openshell.compute.v1.ComputeDriverOperationSettlement",
+        method: "SettleSandboxOperations",
+        operation: "openshell.compute.v1.ComputeDriverOperationSettlement/SettleSandboxOperations",
+    };
     pub const GET_SANDBOX: ComputeDriverRpc = ComputeDriverRpc::new(
         "GetSandbox",
         "openshell.compute.v1.ComputeDriver/GetSandbox",
@@ -200,6 +205,7 @@ pub fn compute_driver_rpc_operation(path: &str) -> Option<ComputeDriverRpc> {
         Some("ValidateSandboxCreate") => Some(rpc::VALIDATE_SANDBOX_CREATE),
         Some("CreateSandbox") => Some(rpc::CREATE_SANDBOX),
         Some("UpdateSandboxConfiguration") => Some(rpc::UPDATE_SANDBOX_CONFIGURATION),
+        Some("SettleSandboxOperations") => Some(rpc::SETTLE_SANDBOX_OPERATIONS),
         Some("GetSandbox") => Some(rpc::GET_SANDBOX),
         Some("ListSandboxes") => Some(rpc::LIST_SANDBOXES),
         Some("StopSandbox") => Some(rpc::STOP_SANDBOX),
@@ -324,6 +330,7 @@ mod tests {
             rpc::VALIDATE_SANDBOX_CREATE,
             rpc::CREATE_SANDBOX,
             rpc::UPDATE_SANDBOX_CONFIGURATION,
+            rpc::SETTLE_SANDBOX_OPERATIONS,
             rpc::GET_SANDBOX,
             rpc::LIST_SANDBOXES,
             rpc::STOP_SANDBOX,
