@@ -39,6 +39,7 @@ use std::collections::{HashMap, HashSet};
 use tonic::Status;
 use tracing::warn;
 
+use super::mutation_replay::{ProviderRejection, ordinary::Facts};
 use super::validation::{validate_provider_fields, validate_provider_mutable_fields};
 use super::{MAX_MAP_KEY_LEN, MAX_MAP_VALUE_LEN, MAX_PROVIDER_CONFIG_ENTRIES};
 
@@ -2698,11 +2699,20 @@ fn selected_profile_workspace(
     })
 }
 
+async fn provider_exists(store: &Store, workspace: &str, name: &str) -> Result<bool, Status> {
+    store
+        .get_by_name(Provider::object_type(), workspace, name)
+        .await
+        .map(|row| row.is_some())
+        .map_err(|error| Status::internal(format!("fetch provider failed: {error}")))
+}
+
 pub(super) async fn handle_create_provider(
     state: &Arc<ServerState>,
     request: Request<CreateProviderRequest>,
 ) -> Result<Response<ProviderResponse>, Status> {
     let principal = super::extract_principal(&request)?;
+    let facts = Facts::from_request(&request);
     let req = request.into_inner();
     let authz = authorize_workspace(
         &state.store,
@@ -2745,6 +2755,17 @@ pub(super) async fn handle_create_provider(
         .await?;
     let profile = resolve_provider_create_profile(&catalog, &mut provider)?;
     validate_provider_create_credentials(&profile, &provider)?;
+    // Check under the workspace guard, before materializing any credentials.
+    if !provider.object_name().is_empty()
+        && provider_exists(&state.store, &workspace, provider.object_name()).await?
+    {
+        emit_provider_lifecycle(
+            &provider_type,
+            LifecycleOperation::Create,
+            TelemetryOutcome::Failure,
+        );
+        return Err(facts.reject_provider(ProviderRejection::AlreadyExists));
+    }
     if state.credentials.stores_provider_credentials() && !provider.credentials.is_empty() {
         state.compute.ensure_workspace(&workspace).await?;
     }
@@ -2961,7 +2982,7 @@ pub(super) async fn handle_import_provider_profiles(
     request: Request<ImportProviderProfilesRequest>,
 ) -> Result<Response<ImportProviderProfilesResponse>, Status> {
     let principal = super::extract_principal(&request)?;
-    let replay_facts = super::mutation_replay::ordinary::Facts::from_request(&request);
+    let replay_facts = Facts::from_request(&request);
     let request = request.into_inner();
     let workspace = authorize_and_resolve_profile_workspace(
         state,
@@ -3056,7 +3077,7 @@ pub(super) async fn handle_update_provider_profiles(
     request: Request<UpdateProviderProfilesRequest>,
 ) -> Result<Response<UpdateProviderProfilesResponse>, Status> {
     let principal = super::extract_principal(&request)?;
-    let replay_facts = super::mutation_replay::ordinary::Facts::from_request(&request);
+    let replay_facts = Facts::from_request(&request);
     let request = request.into_inner();
     let workspace = authorize_and_resolve_profile_workspace(
         state,
@@ -4050,6 +4071,7 @@ pub(super) async fn handle_update_provider(
     request: Request<UpdateProviderRequest>,
 ) -> Result<Response<ProviderResponse>, Status> {
     let principal = super::extract_principal(&request)?;
+    let facts = Facts::from_request(&request);
     let req = request.into_inner();
     let authz = authorize_workspace(
         &state.store,
@@ -4085,6 +4107,16 @@ pub(super) async fn handle_update_provider(
     provider
         .credential_expiration_times
         .extend(req.credential_expiration_times);
+    if !provider.object_name().is_empty()
+        && !provider_exists(&state.store, &workspace, provider.object_name()).await?
+    {
+        emit_provider_lifecycle(
+            &provider_type,
+            LifecycleOperation::Update,
+            TelemetryOutcome::Failure,
+        );
+        return Err(facts.reject_provider(ProviderRejection::NotFound));
+    }
     if state.credentials.stores_provider_credentials() && !provider.credentials.is_empty() {
         state.compute.ensure_workspace(&workspace).await?;
     }
@@ -4816,7 +4848,7 @@ pub(super) async fn handle_configure_provider_refresh(
     request: Request<ConfigureProviderRefreshRequest>,
 ) -> Result<Response<ConfigureProviderRefreshResponse>, Status> {
     let principal = super::extract_principal(&request)?;
-    let replay_facts = super::mutation_replay::ordinary::Facts::from_request(&request);
+    let replay_facts = Facts::from_request(&request);
     let request = request.into_inner();
     let authz = authorize_workspace(
         &state.store,
@@ -5243,7 +5275,7 @@ pub(super) async fn handle_rotate_provider_credential(
     request: Request<RotateProviderCredentialRequest>,
 ) -> Result<Response<RotateProviderCredentialResponse>, Status> {
     let principal = super::extract_principal(&request)?;
-    let replay_facts = super::mutation_replay::ordinary::Facts::from_request(&request);
+    let replay_facts = Facts::from_request(&request);
     let request = request.into_inner();
     let authz = authorize_workspace(
         &state.store,

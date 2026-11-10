@@ -34,8 +34,8 @@ use serde::{Deserialize, Serialize};
 use tonic::{Request, Response, Status};
 
 use super::{
-    Mutation, Scope, Success, global_scope, named_scope, replay_unavailable, restore_resource,
-    storage_error, uncertain,
+    Mutation, ProviderRejection, Scope, Success, global_scope, named_scope, replay_unavailable,
+    restore_resource, storage_error, uncertain,
 };
 use crate::auth::principal::Principal;
 use crate::auth::workspace_authz::{
@@ -90,9 +90,24 @@ struct WriteFacts {
     references: Vec<Reference>,
     refresh: Option<Refresh>,
     global: bool,
+    provider_rejection: Option<ProviderRejection>,
 }
 
 impl Facts {
+    pub(in crate::grpc) fn reject_provider(&self, rejection: ProviderRejection) -> Status {
+        match self.0.lock() {
+            Ok(mut facts) => {
+                facts.provider_rejection = Some(rejection);
+                rejection.status()
+            }
+            Err(_) => uncertain(),
+        }
+    }
+
+    pub(super) fn provider_rejection(&self) -> Result<Option<ProviderRejection>, Status> {
+        Ok(self.0.lock().map_err(|_| uncertain())?.provider_rejection)
+    }
+
     pub(crate) fn global(&self) -> Result<(), Status> {
         self.0.lock().map_err(|_| uncertain())?.global = true;
         Ok(())
