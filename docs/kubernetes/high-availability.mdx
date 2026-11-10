@@ -486,8 +486,8 @@ they provision or remove the sandbox's SSH host identity, so that step runs for
 one sandbox at a time across all replicas. For other
 mutations, a lock wait longer than 10 seconds returns `UNAVAILABLE` with the
 reason `MUTATION_LOCK_TIMEOUT`, and clients can retry the request. A request
-that carried a `request_id` leaves its admission unresolved, like any other
-error, so a retry with the same ID returns `REQUEST_OUTCOME_UNCERTAIN`. Observe
+that carried a `request_id` leaves its admission unresolved, so a retry with
+the same ID returns `REQUEST_OUTCOME_UNCERTAIN`. Observe
 resource state and reconcile effects, then send a new request with a new
 `request_id`. Refer to
 [Durable Request Admission](/sdk/api-errors#durable-request-admission).

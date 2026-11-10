@@ -683,6 +683,104 @@ async fn provider_replay_is_redacted_and_update_does_not_recheck_stale_version()
 }
 
 #[tokio::test]
+async fn duplicate_provider_creates_do_not_exhaust_mutation_admissions() {
+    let (_directory, state) = protected_state().await;
+    let mut create = CreateProviderRequest {
+        provider: Some(Provider {
+            metadata: Some(meta("existing-provider")),
+            r#type: "openai".into(),
+            credentials: HashMap::from([("OPENAI_API_KEY".into(), "test-value".into())]),
+            ..Default::default()
+        }),
+        workspace_scope: Some(openshell_core::proto::workspace_selector("default")),
+        request_id: id(),
+    };
+    let first = run(&state, authed_request(create.clone()))
+        .await
+        .unwrap()
+        .into_inner()
+        .provider
+        .unwrap();
+    for _ in 0..=super::super::MAX_ADMISSIONS_PER_CALLER {
+        create.request_id = id();
+        let status = run(&state, authed_request(create.clone()))
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), Code::AlreadyExists);
+    }
+
+    assert!(
+        state
+            .store
+            .delete(Provider::object_type(), first.object_id())
+            .await
+            .unwrap()
+    );
+    let replayed = run(&state, authed_request(create.clone()))
+        .await
+        .unwrap_err();
+    assert_eq!(replayed.code(), Code::AlreadyExists);
+    assert_eq!(
+        replayed.metadata().get("openshell-replayed").unwrap(),
+        "true"
+    );
+
+    create.request_id = id();
+    run(&state, authed_request(create)).await.unwrap();
+}
+
+#[tokio::test]
+async fn missing_provider_update_replays_without_changing_a_later_provider() {
+    let (_directory, state) = protected_state().await;
+    let mut provider = Provider {
+        metadata: Some(meta("later-provider")),
+        r#type: "openai".into(),
+        credentials: HashMap::from([("OPENAI_API_KEY".into(), "update-value".into())]),
+        ..Default::default()
+    };
+    let workspace_scope = Some(openshell_core::proto::workspace_selector("default"));
+    let update = UpdateProviderRequest {
+        provider: Some(provider.clone()),
+        workspace_scope: workspace_scope.clone(),
+        request_id: id(),
+        ..Default::default()
+    };
+    let status = run(&state, authed_request(update.clone()))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::NotFound);
+
+    provider
+        .credentials
+        .insert("OPENAI_API_KEY".into(), "create-value".into());
+    let create = CreateProviderRequest {
+        provider: Some(provider),
+        workspace_scope,
+        request_id: id(),
+    };
+    let created = run(&state, authed_request(create))
+        .await
+        .unwrap()
+        .into_inner()
+        .provider
+        .unwrap();
+
+    let status = run(&state, authed_request(update)).await.unwrap_err();
+    assert_eq!(status.code(), Code::NotFound);
+    assert_eq!(status.metadata().get("openshell-replayed").unwrap(), "true");
+    let stored = state
+        .store
+        .get_message_by_name::<Provider>("default", "later-provider")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.get_resource_version(),
+        created.get_resource_version()
+    );
+}
+
+#[tokio::test]
 async fn profile_receipts_use_private_identity_and_preserve_diagnostics() {
     let (_directory, state) = protected_state().await;
     let profile = ProviderProfile {

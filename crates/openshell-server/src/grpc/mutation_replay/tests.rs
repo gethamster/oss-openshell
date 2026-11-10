@@ -419,7 +419,7 @@ async fn exercise_expiry_and_uncertainty(state: &Arc<ServerState>) {
         })
         .unwrap();
     let mut expired: Admission = serde_json::from_slice(&row.payload).unwrap();
-    expired.completed_at_ms = Some(current_time_ms() - SUCCESS_TTL_MS);
+    expired.completed_at_ms = Some(current_time_ms() - REPLAY_TTL_MS);
     state
         .store
         .put_if(
@@ -750,6 +750,7 @@ fn admission(success: Option<Success>, completed_at_ms: Option<i64>) -> Vec<u8> 
         workspace_id: None,
         target_id: None,
         success,
+        provider_rejection: None,
         completed_at_ms,
     })
     .unwrap()
