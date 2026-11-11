@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Explicitly opted-in unary mutations. This is an admission fence, not a lease:
-//! an owner that cannot persist success leaves an unresolved claim forever.
+//! an owner that cannot persist an outcome leaves an unresolved claim forever.
 //! Each adapter explicitly approves its authorization and replay representation.
 //!
 //! Only unresolved claims count toward the per-caller limit. Resolved claims
-//! stay replayable for [`SUCCESS_TTL_MS`]; a background reaper then deletes them.
+//! stay replayable for [`REPLAY_TTL_MS`]; a background reaper then deletes them.
 
 #![allow(clippy::result_large_err)]
 
@@ -43,7 +43,7 @@ use crate::persistence::{
 };
 
 const OBJECT_TYPE: &str = "mutation_admission_v1";
-const SUCCESS_TTL_MS: i64 = 24 * 60 * 60 * 1000;
+const REPLAY_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 /// Upper bound on unresolved (in-flight or uncertain) claims per caller.
 const MAX_ADMISSIONS_PER_CALLER: u32 = 1000;
 /// Unresolved claims carry this label; completion clears it. The per-caller
@@ -74,6 +74,8 @@ struct Admission {
     #[serde(default)]
     target_id: Option<String>,
     success: Option<Success>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_rejection: Option<ProviderRejection>,
     completed_at_ms: Option<i64>,
 }
 
@@ -98,6 +100,22 @@ pub(super) enum Success {
     Deletion { outcome: i32 },
     Ordinary(ordinary::Outcome),
     StreamTerminal,
+}
+
+/// Recorded only by provider handlers that proved the request made no change.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub(super) enum ProviderRejection {
+    AlreadyExists,
+    NotFound,
+}
+
+impl ProviderRejection {
+    fn status(self) -> Status {
+        match self {
+            Self::AlreadyExists => Status::already_exists("provider already exists"),
+            Self::NotFound => Status::not_found("provider not found"),
+        }
+    }
 }
 
 pub(super) struct Scope {
@@ -280,6 +298,7 @@ async fn execute_owned<M: Mutation>(
         workspace_id: scope.workspace_id,
         target_id: scope.target_id,
         success: None,
+        provider_rejection: None,
         completed_at_ms: None,
     };
     // Contention is bounded. Losing a race never authorizes execution.
@@ -295,7 +314,7 @@ async fn execute_owned<M: Mutation>(
             if previous.format_version != 1 {
                 return Err(replay_unavailable());
             }
-            if expired_success(&previous, current_time_ms()) {
+            if expired_outcome(&previous, current_time_ms()) {
                 match state
                     .store
                     .delete_if(OBJECT_TYPE, &row.id, row.resource_version)
@@ -323,6 +342,14 @@ async fn execute_owned<M: Mutation>(
                 || previous.protection != admission.protection
             {
                 return Err(replay_unavailable());
+            }
+            if let Some(rejection) = previous.provider_rejection {
+                let mut status = rejection.status();
+                status.metadata_mut().insert(
+                    "openshell-replayed",
+                    "true".parse().expect("static metadata"),
+                );
+                return Err(status);
             }
             let success = previous.success.ok_or_else(uncertain)?;
             let mut response = Response::new(M::restore(&state.store, success).await?);
@@ -362,8 +389,8 @@ async fn execute_owned<M: Mutation>(
             }
             Err(error) => return Err(storage_error(error)),
         };
-        // Any error or panic from here leaves the claim unresolved. Status codes
-        // do not establish that a handler performed no effects.
+        // Keep the claim unresolved unless the handler records a confirmed
+        // outcome. Status codes alone cannot prove the absence of effects.
         let completion = Completion {
             store: state.store.clone(),
             claim_id,
@@ -377,7 +404,15 @@ async fn execute_owned<M: Mutation>(
         }
         let facts = ordinary::Facts::default();
         request.extensions_mut().insert(facts.clone());
-        let mut response = M::execute(state, request).await?;
+        let mut response = match M::execute(state, request).await {
+            Ok(response) => response,
+            Err(status) => {
+                if let Some(rejection) = facts.provider_rejection()? {
+                    completion.finish(Err(rejection)).await?;
+                }
+                return Err(status);
+            }
+        };
         if M::DEFERRED {
             return Ok(response);
         }
@@ -421,9 +456,16 @@ impl Completion {
     }
 
     async fn complete(&self, success: Success) -> Result<(), Status> {
+        self.finish(Ok(success)).await
+    }
+
+    async fn finish(&self, outcome: Result<Success, ProviderRejection>) -> Result<(), Status> {
         let mut admission: Admission =
             serde_json::from_slice(&self.admission).map_err(|_| uncertain())?;
-        admission.success = Some(success);
+        match outcome {
+            Ok(success) => admission.success = Some(success),
+            Err(rejection) => admission.provider_rejection = Some(rejection),
+        }
         admission.completed_at_ms = Some(current_time_ms());
         let payload = serde_json::to_vec(&admission).map_err(|_| uncertain())?;
         if payload.len() > 64 * 1024 {
@@ -446,12 +488,12 @@ impl Completion {
     }
 }
 
-fn expired_success(admission: &Admission, now_ms: i64) -> bool {
+fn expired_outcome(admission: &Admission, now_ms: i64) -> bool {
     admission.format_version == 1
-        && admission.success.is_some()
+        && (admission.success.is_some() || admission.provider_rejection.is_some())
         && admission
             .completed_at_ms
-            .is_some_and(|completed| now_ms >= completed.saturating_add(SUCCESS_TTL_MS))
+            .is_some_and(|completed| now_ms >= completed.saturating_add(REPLAY_TTL_MS))
 }
 
 /// Periodically delete resolved claims whose replay window has ended.
@@ -487,7 +529,7 @@ async fn reap_expired_admissions(
             .into_iter()
             .filter(|row| {
                 serde_json::from_slice::<Admission>(&row.payload)
-                    .is_ok_and(|admission| expired_success(&admission, now_ms))
+                    .is_ok_and(|admission| expired_outcome(&admission, now_ms))
             })
             .map(|row| row.id)
             .collect();
