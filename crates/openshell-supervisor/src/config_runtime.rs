@@ -2444,7 +2444,7 @@ mod tests {
                 "EXTERNAL_TOKEN".into(),
                 openshell_core::time::now_ms() + 3_600_000,
             );
-            response.send(Ok(provider)).unwrap();
+            assert!(response.send(Ok(provider)).is_ok());
             timeout(Duration::from_secs(1), async {
                 loop {
                     let resolved = credentials
