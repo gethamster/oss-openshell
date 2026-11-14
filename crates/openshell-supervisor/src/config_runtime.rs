@@ -1230,7 +1230,8 @@ async fn run_policy_poll_loop_with_client<C: PolicyGatewayClient>(
     }
 
     // The runtime stops polling while its current session pushes
-    // configuration. A reconnect to a gateway that does not push, such as
+    // configuration, except when a credential renewal is due. A reconnect to a
+    // gateway that does not push, such as
     // after a rollback to poll mode, resumes polling. Keep the last value if
     // the session task ends.
     let mut config_push_updates = ctx.config_push_enabled.take();
@@ -1353,7 +1354,7 @@ async fn run_policy_poll_loop_with_client<C: PolicyGatewayClient>(
         if let Some(updates) = config_push_updates.as_ref() {
             config_push_enabled = *updates.borrow();
         }
-        if config_push_enabled {
+        if config_push_enabled && !ctx.provider_readiness.refresh_due() {
             // The session's bootstrap supersedes a polled result that was
             // not reconciled yet.
             pending_result = None;
@@ -2395,6 +2396,79 @@ mod tests {
         assert_eq!(observed.policy_hash, "hash-v2");
         task.abort();
         let _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn expired_provider_renews_without_revision_change_in_poll_and_push_modes() {
+        for push in [false, true] {
+            let mut settings = settings_poll_result(
+                Some(proto_policy_fixture()),
+                1,
+                openshell_core::proto::PolicySource::Sandbox,
+            );
+            settings.provider_env_revision = 6;
+            let (mut ctx, _config_apply_tx, push_tx) = push_session_poll_loop(&settings);
+            push_tx.send(push).unwrap();
+            let mut provider = static_provider_environment(6, Some("expired"));
+            provider.policy_hash.clone_from(&settings.policy_hash);
+            provider
+                .credential_expires_at_ms
+                .insert("EXTERNAL_TOKEN".into(), openshell_core::time::now_ms() - 1);
+            let initial = prepare_provider_environment(&provider).unwrap();
+            ctx.provider_credentials = CapturedProviderEnvironment::new(initial, &provider)
+                .install(&ctx.provider_readiness);
+            let credentials = ctx.provider_credentials.clone();
+            let tracker = ctx.provider_readiness.clone();
+            let live_process_placeholder =
+                credentials.snapshot().child_env["EXTERNAL_TOKEN"].clone();
+            let (policy_gateway, polls, mut reports) = scripted_policy_gateway();
+            let (requests, mut received) = tokio::sync::mpsc::unbounded_channel();
+            polls.send(settings.clone()).unwrap();
+            polls.send(settings).unwrap();
+            let task = tokio::spawn(run_policy_poll_loop_with_client(
+                ctx,
+                ScriptedProviderGateway {
+                    policy: policy_gateway,
+                    requests,
+                },
+            ));
+            expect_policy_report(&mut reports, 1).await;
+            let (_, response) = timeout(Duration::from_secs(1), received.recv())
+                .await
+                .expect("expired provider must refresh even in push mode")
+                .unwrap();
+            provider
+                .environment
+                .insert("EXTERNAL_TOKEN".into(), "renewed".into());
+            provider.credential_expires_at_ms.insert(
+                "EXTERNAL_TOKEN".into(),
+                openshell_core::time::now_ms() + 3_600_000,
+            );
+            assert!(response.send(Ok(provider)).is_ok());
+            timeout(Duration::from_secs(1), async {
+                loop {
+                    let resolved = credentials
+                        .resolver_for_endpoint("tools.example.com", 443, "/v1/chat")
+                        .and_then(|resolver| {
+                            resolver
+                                .resolve_placeholder(&live_process_placeholder)
+                                .map(str::to_owned)
+                        });
+                    if resolved.as_deref() == Some("renewed")
+                        && tracker.observation(&credentials).credentials_installed
+                    {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("existing process must use renewed credentials");
+            assert_eq!(credentials.revision(), 6);
+            assert!(!tracker.refresh_due());
+            task.abort();
+            let _ = task.await;
+        }
     }
 
     #[tokio::test]

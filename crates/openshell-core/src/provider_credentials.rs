@@ -2403,6 +2403,91 @@ mod tests {
     }
 
     #[test]
+    fn expired_retained_generation_uses_current_credential_for_same_identity() {
+        let now = crate::time::now_ms();
+        let state = ProviderCredentialState::from_bound_environment(
+            50,
+            HashMap::from([("API_KEY".to_string(), "expired".to_string())]),
+            HashMap::from([("API_KEY".to_string(), now - 1)]),
+            HashMap::new(),
+            HashMap::from([(
+                "API_KEY".to_string(),
+                binding("api.example.com", 443, "/v1/**"),
+            )]),
+            Vec::new(),
+        )
+        .unwrap();
+        let live_process_placeholder = state.snapshot().child_env["API_KEY"].clone();
+        let install = |revision, value: &str, expiry, binding| {
+            state
+                .install_bound_environment(
+                    revision,
+                    HashMap::from([("API_KEY".to_string(), value.to_string())]),
+                    HashMap::from([("API_KEY".to_string(), expiry)]),
+                    HashMap::new(),
+                    HashMap::from([("API_KEY".to_string(), binding)]),
+                    Vec::new(),
+                )
+                .unwrap();
+        };
+        install(
+            10,
+            "renewed",
+            now + 60_000,
+            binding("api.example.com", 443, "/v1/**"),
+        );
+        let resolver = state
+            .resolver_for_endpoint("api.example.com", 443, "/v1/chat")
+            .unwrap();
+        assert_eq!(
+            resolver.resolve_placeholder(&live_process_placeholder),
+            Some("renewed")
+        );
+        assert_eq!(
+            resolver
+                .rewrite_header_value(&format!("Bearer {}", jwt_alias(&live_process_placeholder)))
+                .unwrap(),
+            Some("Bearer renewed".into())
+        );
+        assert_eq!(
+            resolver.resolve_placeholder("openshell:resolve:env:v99_API_KEY"),
+            None
+        );
+        let denied = state
+            .resolver_for_endpoint("other.example.com", 443, "/v1/chat")
+            .unwrap();
+        assert!(
+            denied
+                .rewrite_header_value(&live_process_placeholder)
+                .unwrap_err()
+                .is_endpoint_mismatch()
+        );
+        install(
+            9,
+            "expired-current",
+            now - 1,
+            binding("api.example.com", 443, "/v1/**"),
+        );
+        assert_eq!(
+            state
+                .resolver_for_endpoint("api.example.com", 443, "/v1/chat")
+                .unwrap()
+                .resolve_placeholder(&live_process_placeholder),
+            None
+        );
+        let mut replacement = binding("api.example.com", 443, "/v1/**");
+        replacement.credential_identity = "replacement:API_KEY".to_string();
+        install(8, "replacement", now + 60_000, replacement);
+        assert_eq!(
+            state
+                .resolver_for_endpoint("api.example.com", 443, "/v1/chat")
+                .unwrap()
+                .resolve_placeholder(&live_process_placeholder),
+            None
+        );
+    }
+
+    #[test]
     fn aged_generation_falls_back_across_non_monotonic_same_identity_rotations() {
         let state = ProviderCredentialState::from_bound_environment(
             50,
