@@ -10,8 +10,14 @@
 # Keep the GNU runtime and CA roots without a shell or unused native TLS libraries.
 # The default variant preserves UID 0 and /; compute drivers set the runtime UID.
 ARG SUPERVISOR_BASE_IMAGE=gcr.io/distroless/base-nossl-debian13@sha256:af5cb8dd589b8520b8c06bebb9efb73d7e16406cab58e85c51761fff49d370a0
+ARG SUPERVISOR_RUNTIME_LIBRARIES_IMAGE=gcr.io/distroless/cc-debian13@sha256:809d04afa1be033c441f76bb0051878c342fb76d0ea236bc6dc94b655fa0fbd6
+FROM ${SUPERVISOR_RUNTIME_LIBRARIES_IMAGE} AS supervisor-runtime-libraries
+
 FROM ${SUPERVISOR_BASE_IMAGE} AS supervisor
 COPY LICENSE LICENSE-UPSTREAM /usr/share/licenses/openshell/
+
+# Rust's GNU unwinder resolves libgcc_s at process startup.
+COPY --from=supervisor-runtime-libraries /usr/lib/*-linux-gnu/libgcc_s.so.1 /usr/lib/
 
 ARG TARGETARCH
 
