@@ -435,7 +435,9 @@ impl SecretResolver {
         // handle retains the original endpoint, epoch, and expiration constraints.
         let canonical_alias = alias_env_key(value).map(placeholder_for_env_key);
         let value = canonical_alias.as_deref().unwrap_or(value);
-        if placeholder_env_key(value).is_some_and(|key| self.identity_bound_env_keys.contains(key))
+        let identity_bound = placeholder_env_key(value)
+            .is_some_and(|key| self.identity_bound_env_keys.contains(key));
+        if identity_bound
             && revisioned_placeholder_parts(value).is_none()
             && stable_placeholder_parts(value).is_none()
         {
@@ -444,21 +446,19 @@ impl SecretResolver {
             // stale process cannot resolve a replacement provider's credential.
             return None;
         }
-        let secret = if let Some(secret) = self
-            .by_placeholder
-            .get(value)
-            .filter(|secret| secret.expires_at_ms <= 0 || secret.expires_at_ms > now_ms())
-        {
+        let secret = if let Some(secret) = self.by_placeholder.get(value).filter(|secret| {
+            !identity_bound || secret.expires_at_ms <= 0 || secret.expires_at_ms > now_ms()
+        }) {
             secret
         } else {
-            // Once an old generation expires or ages out, fall back by key to the current
-            // credential so long-running child processes survive provider
-            // credential refresh. For endpoint-bound credentials, permit that
+            // An expired endpoint-bound generation, or an aged-out generation,
+            // may use the current credential so long-running child processes
+            // survive refresh. For endpoint-bound credentials, permit that
             // fallback only when the exact opaque revision belongs to the
             // current provider-identity epoch.
             let key = revisioned_placeholder_env_key(value)?;
             if let Some((revision, key)) = revisioned_placeholder_parts(value)
-                && self.identity_bound_env_keys.contains(key)
+                && identity_bound
                 && self
                     .revision_fallback_allowed_revisions
                     .get(key)
