@@ -165,18 +165,6 @@ impl Tracker {
         state.refresh_at_ms.is_some_and(|deadline| deadline <= now)
     }
 
-    /// Wake before expiry, retaining the normal retry cadence after a failed fetch.
-    pub(crate) fn next_refresh_delay(&self, interval: Duration) -> Duration {
-        let state = self.state.borrow();
-        let now = openshell_core::time::now_ms();
-        match state.refresh_at_ms {
-            Some(deadline) if deadline > now => interval.min(Duration::from_millis(
-                deadline.saturating_sub(now).unsigned_abs(),
-            )),
-            _ => interval,
-        }
-    }
-
     /// Bind policy evidence to the exact generation returned by runtime installation.
     pub(crate) fn policy_activated(
         &self,

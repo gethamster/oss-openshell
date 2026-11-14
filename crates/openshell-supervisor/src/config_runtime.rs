@@ -1358,9 +1358,7 @@ async fn run_policy_poll_loop_with_client<C: PolicyGatewayClient>(
             // The session's bootstrap supersedes a polled result that was
             // not reconciled yet.
             pending_result = None;
-            let delay = ctx
-                .provider_readiness
-                .next_refresh_delay(next_poll_delay(&ctx.extension_credentials, interval));
+            let delay = next_poll_delay(&ctx.extension_credentials, interval);
             tokio::select! {
                 changed = async {
                     match config_push_updates.as_mut() {
@@ -1391,9 +1389,7 @@ async fn run_policy_poll_loop_with_client<C: PolicyGatewayClient>(
         let result = if let Some(result) = pending_result.take() {
             result
         } else {
-            let delay = ctx
-                .provider_readiness
-                .next_refresh_delay(next_poll_delay(&ctx.extension_credentials, interval));
+            let delay = next_poll_delay(&ctx.extension_credentials, interval);
             tokio::select! {
                 request = receive_config_apply(&mut config_apply_rx) => {
                     if let Some(request) = request {
