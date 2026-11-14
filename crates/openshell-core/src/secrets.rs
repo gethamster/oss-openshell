@@ -444,10 +444,14 @@ impl SecretResolver {
             // stale process cannot resolve a replacement provider's credential.
             return None;
         }
-        let secret = if let Some(secret) = self.by_placeholder.get(value) {
+        let secret = if let Some(secret) = self
+            .by_placeholder
+            .get(value)
+            .filter(|secret| secret.expires_at_ms <= 0 || secret.expires_at_ms > now_ms())
+        {
             secret
         } else {
-            // Once an old generation ages out, fall back by key to the current
+            // Once an old generation expires or ages out, fall back by key to the current
             // credential so long-running child processes survive provider
             // credential refresh. For endpoint-bound credentials, permit that
             // fallback only when the exact opaque revision belongs to the

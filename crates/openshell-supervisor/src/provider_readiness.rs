@@ -22,6 +22,9 @@ use openshell_isolation_interface::contract::ProviderEnvironmentInstallation;
 use openshell_supervisor_network::opa::PolicyGenerationGuard;
 use tokio::sync::watch;
 
+// The gateway requests credentials with at least five minutes remaining.
+const MAX_REFRESH_LEAD_MS: i64 = 300_000;
+
 /// Authority captured before consuming a provider response's credential fields.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EnvironmentIdentity {
@@ -72,6 +75,7 @@ struct State {
     installation_id: String,
     credential_reason: Reason,
     expires_at_ms: Option<i64>,
+    refresh_at_ms: Option<i64>,
     policy: Option<InstalledPolicy>,
     policy_failure: Option<FailedPolicy>,
     process: Option<ProviderEnvironmentInstallation>,
@@ -92,6 +96,7 @@ impl Tracker {
             installation_id: String::new(),
             credential_reason: Reason::WaitingForCredentials,
             expires_at_ms: None,
+            refresh_at_ms: None,
             policy: None,
             policy_failure: None,
             process: None,
@@ -107,6 +112,7 @@ impl Tracker {
             state.installation_id.clear();
             state.credential_reason = reason;
             state.expires_at_ms = None;
+            // Keep the renewal deadline so a failed renewal retries in push mode.
             state.process = None;
             state.process_reason = Reason::WaitingForProcess;
         });
@@ -130,6 +136,13 @@ impl Tracker {
             state.identity = identity;
             state.installation_id.clone_from(&snapshot.installation_id);
             state.expires_at_ms = expires_at_ms;
+            // Match the gateway's five-minute credential validity window, while
+            // letting short-lived credentials use most of their issued lifetime.
+            let now = openshell_core::time::now_ms();
+            state.refresh_at_ms = expires_at_ms.map(|expiry| {
+                let remaining = expiry.saturating_sub(now).max(0);
+                expiry.saturating_sub((remaining / 5).min(MAX_REFRESH_LEAD_MS))
+            });
             state.process = None;
             state.process_reason = Reason::WaitingForProcess;
         });
@@ -138,7 +151,30 @@ impl Tracker {
     /// Retry failed installations even when the requested fingerprint is unchanged.
     pub(crate) fn needs_environment(&self, identity: &EnvironmentIdentity) -> bool {
         let state = self.state.borrow();
-        state.credential_reason != Reason::Unspecified || state.identity != *identity
+        state.credential_reason != Reason::Unspecified
+            || state.identity != *identity
+            || Self::refresh_due_at(&state, openshell_core::time::now_ms())
+    }
+
+    /// Renew expiring credentials even when the gateway fingerprint is unchanged.
+    pub(crate) fn refresh_due(&self) -> bool {
+        Self::refresh_due_at(&self.state.borrow(), openshell_core::time::now_ms())
+    }
+
+    fn refresh_due_at(state: &State, now: i64) -> bool {
+        state.refresh_at_ms.is_some_and(|deadline| deadline <= now)
+    }
+
+    /// Wake before expiry, retaining the normal retry cadence after a failed fetch.
+    pub(crate) fn next_refresh_delay(&self, interval: Duration) -> Duration {
+        let state = self.state.borrow();
+        let now = openshell_core::time::now_ms();
+        match state.refresh_at_ms {
+            Some(deadline) if deadline > now => interval.min(Duration::from_millis(
+                deadline.saturating_sub(now).unsigned_abs(),
+            )),
+            _ => interval,
+        }
     }
 
     /// Bind policy evidence to the exact generation returned by runtime installation.
@@ -460,6 +496,27 @@ mod tests {
             nanos: 0,
         });
         assert!(!report_acknowledged(&response, 8));
+    }
+
+    #[test]
+    fn renewal_deadline_scales_to_lifetime_and_retries_without_revision_change() {
+        let tracker = Tracker::new();
+        let credentials = ProviderCredentialState::from_child_env_snapshot(6, HashMap::new());
+        let now = openshell_core::time::now_ms();
+        tracker.credentials_installed(identity(), &credentials, Some(now + 3_600_000));
+        let deadline = tracker.state.borrow().refresh_at_ms.unwrap();
+        assert_eq!(deadline, now + 3_300_000);
+        assert!(!tracker.needs_environment(&identity()));
+        tracker.credentials_installed(identity(), &credentials, Some(now + 10_000));
+        assert!(tracker.state.borrow().refresh_at_ms.unwrap() >= now + 8_000);
+        tracker.credentials_installed(identity(), &credentials, Some(now - 1));
+        assert!(tracker.needs_environment(&identity()));
+        tracker.credentials_failed(identity(), Reason::CredentialInstallFailed);
+        assert!(tracker.refresh_due());
+        tracker.credentials_installed(identity(), &credentials, Some(now + 3_600_000));
+        assert!(!tracker.refresh_due());
+        tracker.credentials_installed(identity(), &credentials, None);
+        assert!(!tracker.refresh_due());
     }
 
     struct CapturingReporter(tokio::sync::mpsc::UnboundedSender<ProviderReadinessObservation>);
