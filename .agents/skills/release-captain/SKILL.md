@@ -7,6 +7,10 @@ metadata:
 
 # Release Captain
 
+This is the upstream release procedure. Use it only when the user explicitly
+requests that upstream GitHub release. Hamster OSS releases use Foundry; a request
+to release, deploy, or start a train does not authorize GitHub writes.
+
 OpenShell publishes a stable release every Tuesday from a qualified
 pre-release ([RFC 0014](../../../rfc/0014-release-stability/README.md)). The
 release captain keeps the week's pre-release train green, coordinates the last
@@ -200,14 +204,9 @@ git worktree remove --force "$wt"
    done
    ```
 
-   After approval, push the tag. The `-c` and `/dev/null` keep `git` from
-   signing the tag and opening an editor:
-
-   ```shell
-   NEXT=vX.Y.Z-pre.1 NEXT_SHA=<commit>
-   git -c tag.gpgSign=false tag "$NEXT" "$NEXT_SHA" </dev/null
-   git push origin "refs/tags/$NEXT"
-   ```
+   Follow the explicitly authorized upstream tagging procedure. Hamster OSS
+   release tags and delivery use Foundry; do not push tags to GitHub based on a
+   general release request.
 
    You're done when that `Pre-release` run passes, or its failure is handed to
    next week's captain.

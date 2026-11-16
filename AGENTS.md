@@ -1,5 +1,13 @@
 # Agent Instructions
 
+## Hamster OSS delivery
+
+For this Hamster OSS repository, Foundry is the canonical source and push
+destination. Use Foundry's accepted-main and Source review workflow. Do not push
+branches or tags to GitHub, open GitHub pull requests, or repair or synchronize
+GitHub mirrors unless the user explicitly requests that GitHub action. A GitHub
+`origin` or imported upstream workflow does not authorize GitHub writes.
+
 This file is the primary instruction surface for agents contributing to OpenShell. It is injected into your context on every interaction — keep that in mind when proposing changes to it.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions, task reference, project structure, and the full agent skills table.

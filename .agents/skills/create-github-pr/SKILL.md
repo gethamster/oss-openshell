@@ -1,13 +1,16 @@
 ---
 name: create-github-pr
-description: Create GitHub pull requests using the gh CLI. Use when the user wants to create a new PR, submit code for review, or open a pull request. Trigger keywords - create PR, pull request, new PR, submit for review, code review.
+description: Use only for an explicitly requested upstream GitHub pull request. Hamster OSS source review and delivery use Foundry, including requests to submit changes or create a review.
 metadata:
   internal: true
 ---
 
 # Create GitHub Pull Request
 
-Create pull requests on GitHub using the `gh` CLI.
+For this Hamster OSS repository, source review and accepted-main delivery use
+Foundry. Apply the GitHub procedure below only when the user explicitly requests
+an upstream GitHub pull request; a general review or delivery request does not
+authorize it.
 
 ## Prerequisites
 
@@ -54,13 +57,11 @@ Before creating a PR, verify:
    git branch --show-current
    ```
 
-### Push Your Branch
+### Source destination
 
-Ensure your branch is pushed to the remote:
-
-```bash
-git push -u origin HEAD
-```
+Use the explicitly authorized source destination. Do not infer GitHub push
+authorization from an `origin` URL or from this skill being selected. Hamster OSS
+branches are submitted through Foundry.
 
 ## Creating a PR
 

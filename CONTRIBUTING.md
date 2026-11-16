@@ -1,5 +1,13 @@
 # Contributing to OpenShell
 
+## Hamster OSS delivery
+
+For this Hamster OSS repository, Foundry is the canonical source and push
+destination. Use Foundry's accepted-main and Source review workflow. Do not push
+branches or tags to GitHub, open GitHub pull requests, or repair or synchronize
+GitHub mirrors unless the user explicitly requests that GitHub action. A GitHub
+`origin` or imported upstream workflow does not authorize GitHub writes.
+
 OpenShell is built agent-first. We use agents to design and implement systems, while humans manage product decisions and the project roadmap.
 
 ## The Critical Rule
