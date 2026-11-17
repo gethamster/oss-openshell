@@ -756,7 +756,7 @@ where
             ctx.request_scheme(),
             request_id,
             response_chain,
-            engine.middleware_runner(),
+            &engine.middleware_runner(),
             Some(engine.generation_guard()),
         )),
         observer.as_ref(),
@@ -1106,7 +1106,7 @@ where
         }
         L7Protocol::Graphql => relay_graphql(config, &engine, client, upstream, ctx).await,
         L7Protocol::Sql => {
-            if close_if_stale(engine.generation_guard(), ctx) {
+            if close_if_tunnel_stale(&engine, ctx) {
                 return Ok(());
             }
             // The SQL relay is not implemented, so a matching middleware
@@ -1133,6 +1133,9 @@ where
                     .build();
                 ocsf_emit!(event);
             }
+            // A raw stream has no request boundary for re-admission, so any
+            // policy reload closes it.
+            engine.generation_guard().end_readmission();
             tokio::io::copy_bidirectional(client, upstream)
                 .await
                 .into_diagnostic()?;
@@ -1175,7 +1178,7 @@ where
         });
 
     loop {
-        if close_if_stale(engine.generation_guard(), ctx) {
+        if close_if_tunnel_stale(&engine, ctx) {
             return Ok(());
         }
 
@@ -1339,7 +1342,7 @@ where
             None
         };
 
-        if close_if_stale(engine.generation_guard(), ctx) {
+        if close_if_tunnel_stale(&engine, ctx) {
             return Ok(());
         }
 
@@ -1400,6 +1403,7 @@ where
             evaluate_l7_request(&engine, ctx, &request_info)?
         };
 
+        // The decision is made: a reload after it fails closed.
         if close_if_stale(engine.generation_guard(), ctx) {
             return Ok(());
         }
@@ -1438,7 +1442,7 @@ where
                 client,
                 ctx,
                 chain,
-                engine.middleware_runner(),
+                &engine.middleware_runner(),
                 engine.generation_guard(),
                 openshell_supervisor_middleware::TransformedBodyPolicy::Reevaluate(&validate),
                 &request_id,
@@ -1489,7 +1493,7 @@ where
                 let preflight = websocket_middleware_preflight(
                     &req,
                     chain,
-                    engine.middleware_runner(),
+                    &engine.middleware_runner(),
                     ctx,
                     ctx.websocket_scheme(),
                 )
@@ -1787,6 +1791,10 @@ fn websocket_preflight_input(
 /// Forwards any overflow bytes from the upgrade response to the client, then
 /// either switches to a parsed WebSocket relay for opted-in message policy /
 /// credential rewriting or to raw bidirectional TCP copy for other upgrades.
+///
+/// An upgraded stream has no request boundary at which a reloaded policy can
+/// re-admit its tunnel. Re-admission therefore ends here, and any policy
+/// reload closes the stream.
 pub(crate) async fn handle_upgrade<C, U>(
     client: &mut C,
     upstream: &mut U,
@@ -1799,6 +1807,9 @@ where
     C: AsyncRead + AsyncWrite + Unpin + Send,
     U: AsyncRead + AsyncWrite + Unpin + Send,
 {
+    if let Some(guard) = options.generation_guard {
+        guard.end_readmission();
+    }
     ensure_upgrade_generation_current(client, upstream, host, port, &mut options).await?;
     let start_terminal_reason = if let Some(session) = options.middleware_session.as_mut() {
         let start = session
@@ -2037,7 +2048,7 @@ where
             ..Default::default()
         });
     loop {
-        if close_if_stale(engine.generation_guard(), ctx) {
+        if close_if_tunnel_stale(engine, ctx) {
             return Ok(());
         }
 
@@ -2074,7 +2085,7 @@ where
             return Ok(());
         }
 
-        if close_if_stale(engine.generation_guard(), ctx) {
+        if close_if_tunnel_stale(engine, ctx) {
             return Ok(());
         }
 
@@ -2113,6 +2124,7 @@ where
         // Evaluate L7 policy via Rego (using redacted target)
         let (allowed, reason) = evaluate_l7_request(engine, ctx, &request_info)?;
 
+        // The decision is made: a reload after it fails closed.
         if close_if_stale(engine.generation_guard(), ctx) {
             return Ok(());
         }
@@ -2185,7 +2197,7 @@ where
                 client,
                 ctx,
                 chain,
-                engine.middleware_runner(),
+                &engine.middleware_runner(),
                 engine.generation_guard(),
                 openshell_supervisor_middleware::TransformedBodyPolicy::NotPolicyRelevant,
                 &request_id,
@@ -2233,7 +2245,7 @@ where
                 let preflight = websocket_middleware_preflight(
                     &req,
                     chain,
-                    engine.middleware_runner(),
+                    &engine.middleware_runner(),
                     ctx,
                     ctx.websocket_scheme(),
                 )
@@ -2362,13 +2374,71 @@ where
     }
 }
 
+/// Close a stand-alone guarded relay at a request boundary unless the current
+/// policy re-admits its tunnel. A guard owned by a tunnel evaluator is never
+/// re-admitted here, so for it this is a strict staleness check.
 fn close_if_stale(guard: &PolicyGenerationGuard, ctx: &L7EvalContext) -> bool {
-    if !guard.is_stale() {
+    let captured_generation = guard.captured_generation();
+    if guard.readmit_if_stale() {
+        emit_if_readmitted(captured_generation, guard, ctx);
         return false;
     }
 
     emit_policy_reload(guard, &ctx.host, ctx.port, &ctx.policy_name);
     true
+}
+
+/// Close an inspected relay at a request boundary unless the current policy
+/// re-admits its tunnel. A re-admitted tunnel evaluates the next request with
+/// the current policy.
+fn close_if_tunnel_stale(engine: &TunnelPolicyEngine, ctx: &L7EvalContext) -> bool {
+    if readmit_tunnel(engine, ctx) {
+        return false;
+    }
+
+    emit_policy_reload(
+        engine.generation_guard(),
+        &ctx.host,
+        ctx.port,
+        &ctx.policy_name,
+    );
+    true
+}
+
+/// Move a stale tunnel evaluator to the current generation when the current
+/// policy re-admits it. Returns `false` when the caller must fail closed.
+fn readmit_tunnel(engine: &TunnelPolicyEngine, ctx: &L7EvalContext) -> bool {
+    let captured_generation = engine.captured_generation();
+    if !engine.readmit_if_stale() {
+        return false;
+    }
+    emit_if_readmitted(captured_generation, engine.generation_guard(), ctx);
+    true
+}
+
+fn emit_if_readmitted(
+    previous_generation: u64,
+    guard: &PolicyGenerationGuard,
+    ctx: &L7EvalContext,
+) {
+    let generation = guard.captured_generation();
+    if generation == previous_generation {
+        return;
+    }
+    ocsf_emit!(
+        NetworkActivityBuilder::new(openshell_ocsf::ctx::ctx())
+            .activity(ActivityId::Other)
+            .action(ActionId::Allowed)
+            .disposition(DispositionId::Allowed)
+            .severity(SeverityId::Informational)
+            .dst_endpoint(Endpoint::from_domain(&ctx.host, ctx.port))
+            .firewall_rule(&ctx.policy_name, "l7")
+            .message(format!(
+                "L7 tunnel re-admitted after policy reload [host:{} port:{} previous_generation:{} current_generation:{}]",
+                ctx.host, ctx.port, previous_generation, generation,
+            ))
+            .build()
+    );
 }
 
 pub(crate) fn emit_policy_reload(
@@ -2447,7 +2517,7 @@ where
     U: AsyncRead + AsyncWrite + Unpin + Send,
 {
     loop {
-        if close_if_stale(engine.generation_guard(), ctx) {
+        if close_if_tunnel_stale(engine, ctx) {
             return Ok(());
         }
 
@@ -2508,7 +2578,7 @@ where
         {
             return Ok(());
         }
-        if close_if_stale(engine.generation_guard(), ctx) {
+        if close_if_tunnel_stale(engine, ctx) {
             return Ok(());
         }
 
@@ -2555,6 +2625,7 @@ where
             (evaluation.allowed, evaluation.reason, evaluation.log_info)
         };
 
+        // The decision is made: a reload after it fails closed.
         if close_if_stale(engine.generation_guard(), ctx) {
             return Ok(());
         }
@@ -2614,7 +2685,7 @@ where
                 client,
                 ctx,
                 chain,
-                engine.middleware_runner(),
+                &engine.middleware_runner(),
                 engine.generation_guard(),
                 openshell_supervisor_middleware::TransformedBodyPolicy::Reevaluate(&validate),
                 &request_id,
@@ -2732,7 +2803,7 @@ where
         });
 
     loop {
-        if close_if_stale(engine.generation_guard(), ctx) {
+        if close_if_tunnel_stale(engine, ctx) {
             return Ok(());
         }
 
@@ -2805,7 +2876,7 @@ where
             return Ok(());
         }
 
-        if close_if_stale(engine.generation_guard(), ctx) {
+        if close_if_tunnel_stale(engine, ctx) {
             return Ok(());
         }
 
@@ -2837,6 +2908,7 @@ where
             evaluate_l7_request(engine, ctx, &request_info)?
         };
 
+        // The decision is made: a reload after it fails closed.
         if close_if_stale(engine.generation_guard(), ctx) {
             return Ok(());
         }
@@ -2896,7 +2968,7 @@ where
                 client,
                 ctx,
                 chain,
-                engine.middleware_runner(),
+                &engine.middleware_runner(),
                 engine.generation_guard(),
                 openshell_supervisor_middleware::TransformedBodyPolicy::Reevaluate(&validate),
                 &request_id,
@@ -3111,8 +3183,24 @@ fn is_benign_connection_error(err: &miette::Report) -> bool {
 
 /// Evaluate an L7 request against the OPA engine.
 ///
-/// Returns `(allowed, deny_reason)`.
+/// A stale tunnel is first re-admitted against the current policy, so a
+/// request that starts after a compatible reload is evaluated with the
+/// current policy. Returns `(allowed, deny_reason)`.
 pub fn evaluate_l7_request(
+    engine: &TunnelPolicyEngine,
+    ctx: &L7EvalContext,
+    request: &L7RequestInfo,
+) -> Result<(bool, String)> {
+    if !readmit_tunnel(engine, ctx) {
+        return Err(stale_tunnel_error(engine));
+    }
+    evaluate_l7_request_current(engine, ctx, request)
+}
+
+/// Evaluate an L7 request only if the tunnel generation is still current.
+/// Used inside an exchange, where state from the captured generation is
+/// already in use.
+fn evaluate_l7_request_current(
     engine: &TunnelPolicyEngine,
     ctx: &L7EvalContext,
     request: &L7RequestInfo,
@@ -3146,6 +3234,9 @@ fn evaluate_jsonrpc_l7_request_for_log(
     request: &L7RequestInfo,
     jsonrpc: &crate::l7::jsonrpc::JsonRpcRequestInfo,
 ) -> Result<JsonRpcEvaluation> {
+    if !readmit_tunnel(engine, ctx) {
+        return Err(stale_tunnel_error(engine));
+    }
     if jsonrpc.has_response {
         let (allowed, reason) = evaluate_l7_request_once(engine, ctx, request)?;
         if !allowed || !jsonrpc.is_batch || jsonrpc.calls.is_empty() {
@@ -3291,7 +3382,9 @@ fn reevaluate_transformed_body(
         return Ok(Some(reason));
     }
 
-    let (allowed, reason) = evaluate_l7_request(engine, ctx, &transformed_info)?;
+    // The chain already ran under the captured generation, so this check
+    // must not move the tunnel to a newer one.
+    let (allowed, reason) = evaluate_l7_request_current(engine, ctx, &transformed_info)?;
     if allowed {
         return Ok(None);
     }
@@ -3414,6 +3507,8 @@ fn admitted_token_grant_owners_once(
     ctx: &L7EvalContext,
     request: &L7RequestInfo,
 ) -> Result<HashSet<String>> {
+    // Runs after middleware inside an exchange, so a stale tunnel fails
+    // closed here instead of moving to a newer generation.
     if engine.is_stale() {
         return Err(miette!("policy changed before token grant selection"));
     }
@@ -3455,17 +3550,21 @@ fn l7_request_policy_input(ctx: &L7EvalContext, request: &L7RequestInfo) -> serd
     })
 }
 
+fn stale_tunnel_error(engine: &TunnelPolicyEngine) -> miette::Report {
+    miette!(
+        "L7 tunnel policy generation is stale [captured_generation:{} current_generation:{}]",
+        engine.captured_generation(),
+        engine.current_generation(),
+    )
+}
+
 fn evaluate_l7_request_once(
     engine: &TunnelPolicyEngine,
     ctx: &L7EvalContext,
     request: &L7RequestInfo,
 ) -> Result<(bool, String)> {
     if engine.is_stale() {
-        return Err(miette!(
-            "L7 tunnel policy generation is stale [captured_generation:{} current_generation:{}]",
-            engine.captured_generation(),
-            engine.current_generation(),
-        ));
+        return Err(stale_tunnel_error(engine));
     }
 
     let input = l7_request_policy_input(ctx, request);
@@ -3709,6 +3808,9 @@ where
             RelayOutcome::Reusable => {} // continue loop
             RelayOutcome::Consumed => break,
             RelayOutcome::Upgraded { overflow, .. } => {
+                // The upgraded stream has no request boundary, so any later
+                // policy reload closes it.
+                generation_guard.end_readmission();
                 return handle_upgrade(
                     client,
                     upstream,

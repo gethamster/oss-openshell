@@ -44,6 +44,9 @@ pub(super) struct EndpointDecision {
     pub(super) matched_endpoints: Vec<crate::opa::MatchedEndpoint>,
     /// Whether policy matched the requested hostname exactly (not by glob).
     pub(super) exact_declared_host: bool,
+    /// The exact policy input that produced this decision. A relay uses it
+    /// to check its tunnel again after a policy reload.
+    pub(super) admission_input: Option<crate::opa::NetworkInput>,
 }
 
 impl Default for EndpointDecision {
@@ -55,18 +58,39 @@ impl Default for EndpointDecision {
             policy_configs: Vec::new(),
             matched_endpoints: Vec::new(),
             exact_declared_host: false,
+            admission_input: None,
         }
     }
 }
 
 impl EndpointDecision {
-    pub(super) fn from_authorization(authorization: &crate::opa::EgressAuthorization) -> Self {
+    pub(super) fn from_authorization(
+        authorization: &crate::opa::EgressAuthorization,
+        input: &crate::opa::NetworkInput,
+    ) -> Self {
         Self {
             policy_configs: authorization.endpoint_configs.clone(),
             matched_endpoints: authorization.matched_endpoints.clone(),
             exact_declared_host: authorization.exact_declared_endpoint_host,
+            admission_input: Some(input.clone()),
             ..Self::default()
         }
+    }
+
+    /// Capture the admission of an allowed tunnel for re-checks after a
+    /// policy reload. `None` when the decision has no recorded input or did
+    /// not allow the connection.
+    pub(super) fn tunnel_admission(
+        &self,
+        action: &NetworkAction,
+    ) -> Option<crate::opa::TunnelAdmission> {
+        crate::opa::TunnelAdmission::new(
+            self.admission_input.clone()?,
+            action,
+            self.policy_configs.clone(),
+            self.matched_endpoints.clone(),
+            self.exact_declared_host,
+        )
     }
 }
 

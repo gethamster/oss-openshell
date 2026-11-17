@@ -5,7 +5,9 @@
 
 use super::{EgressDecision, L7RouteSnapshot, emit_l7_tunnel_close_after_policy_change};
 use crate::l7::relay::L7EvalContext;
-use crate::opa::{NetworkAction, OpaEngine, PolicyGenerationGuard, TunnelPolicyEngine};
+use crate::opa::{
+    NetworkAction, OpaEngine, PolicyGenerationGuard, TunnelPolicyEngine, TunnelReadmission,
+};
 use miette::{IntoDiagnostic, Result};
 use openshell_core::activity::ActivitySender;
 use openshell_core::endpoint_status::EndpointObservationSender;
@@ -25,9 +27,11 @@ enum PreparedHttpPolicy {
 
 /// Everything an HTTP relay needs after authorization is complete.
 ///
-/// The relay deliberately owns a generation-pinned policy primitive instead
-/// of retaining access to the mutable OPA engine. Policy reloads therefore
-/// fail closed through the guard or tunnel evaluator already attached here.
+/// The relay owns a generation-pinned policy primitive. Its only route to the
+/// mutable OPA engine is re-admission: after a reload, the original CONNECT
+/// authorization runs again, and the tunnel moves to the current generation
+/// only when the result is identical. Otherwise policy reloads fail closed
+/// through the guard or tunnel evaluator already attached here.
 pub(super) struct RelayContext<'a> {
     request: &'a L7EvalContext,
     policy: PreparedHttpPolicy,
@@ -137,14 +141,52 @@ pub(super) fn validate_route_generation(
     Ok(())
 }
 
+/// Build the state that lets a relay check its tunnel again after a policy
+/// reload. `None` keeps the relay strictly pinned to its first generation.
+fn tunnel_readmission(
+    opa_engine: &Arc<OpaEngine>,
+    decision: &EgressDecision,
+) -> Option<Arc<TunnelReadmission>> {
+    let admission = decision.endpoint.tunnel_admission(&decision.action)?;
+    Some(TunnelReadmission::new(Arc::clone(opa_engine), admission))
+}
+
+/// Pin the decision's generation, or, when a reload already happened, the
+/// current generation if the current policy re-admits the tunnel.
+fn pin_or_readmit<T>(
+    readmission: Option<&Arc<TunnelReadmission>>,
+    pinned: Result<T>,
+    readmit: impl FnOnce(&Arc<TunnelReadmission>) -> Result<Option<T>>,
+    attach: impl FnOnce(T, Arc<TunnelReadmission>) -> T,
+) -> Result<T> {
+    let Some(readmission) = readmission else {
+        return pinned;
+    };
+    let pinned = match pinned {
+        Ok(pinned) => pinned,
+        Err(error) => match readmit(readmission) {
+            Ok(Some(readmitted)) => return Ok(readmitted),
+            Ok(None) => return Err(error),
+            Err(readmit_error) => {
+                return Err(miette::miette!(
+                    "{error}; tunnel re-admission failed: {readmit_error}"
+                ));
+            }
+        },
+    };
+    Ok(attach(pinned, Arc::clone(readmission)))
+}
+
 /// Prepare a generation-pinned HTTP relay at the adapter boundary.
 ///
-/// A stale generation preserves the established CONNECT behavior: emit the
-/// policy-change close event and let the adapter close the live tunnel without
-/// attempting to write an HTTP response into it.
+/// A stale generation is checked again against the current policy. When the
+/// current policy no longer admits the tunnel with the same state, the
+/// established CONNECT behavior applies: emit the policy-change close event
+/// and let the adapter close the live tunnel without attempting to write an
+/// HTTP response into it.
 pub(super) fn prepare_http_relay<'a>(
     route: Option<&L7RouteSnapshot>,
-    opa_engine: &'a OpaEngine,
+    opa_engine: &'a Arc<OpaEngine>,
     decision: &EgressDecision,
     request: &'a L7EvalContext,
 ) -> Option<RelayContext<'a>> {
@@ -157,8 +199,14 @@ pub(super) fn prepare_http_relay<'a>(
         return None;
     }
 
+    let readmission = tunnel_readmission(opa_engine, decision);
     let policy = if let Some(route) = route.filter(|route| !route.configs.is_empty()) {
-        let evaluator = match pin_l7_evaluator(opa_engine, decision.policy_generation) {
+        let evaluator = match pin_or_readmit(
+            readmission.as_ref(),
+            pin_l7_evaluator(opa_engine, decision.policy_generation),
+            TunnelReadmission::pin_tunnel,
+            TunnelPolicyEngine::with_readmission,
+        ) {
             Ok(evaluator) => evaluator,
             Err(error) => {
                 emit_l7_tunnel_close_after_policy_change(
@@ -179,7 +227,12 @@ pub(super) fn prepare_http_relay<'a>(
             evaluator: Box::new(evaluator),
         }
     } else {
-        let generation_guard = match pin_policy_generation(opa_engine, decision.policy_generation) {
+        let generation_guard = match pin_or_readmit(
+            readmission.as_ref(),
+            pin_policy_generation(opa_engine, decision.policy_generation),
+            TunnelReadmission::pin_guard,
+            PolicyGenerationGuard::with_readmission,
+        ) {
             Ok(guard) => guard,
             Err(error) => {
                 emit_l7_tunnel_close_after_policy_change(
@@ -232,6 +285,11 @@ pub(super) fn prepare_raw_relay(
 
 /// Relay an HTTP/1 stream using an already-authorized, generation-pinned context.
 ///
+/// A policy reload closes the stream at once unless the current policy still
+/// admits the tunnel with the same connect-time state. A re-admitted stream
+/// moves to the current generation at its next request boundary; checks
+/// inside an in-flight exchange stay fail-closed.
+///
 /// CONNECT plaintext and TLS-terminated streams both enter through this
 /// function. Forward HTTP will provide a buffered first request to the same
 /// boundary in the next migration step.
@@ -255,7 +313,7 @@ where
                     upstream,
                     context.request,
                 ) => result,
-                () = generation_guard.wait_until_stale() => {
+                () = generation_guard.wait_until_revoked() => {
                     emit_stale_relay_close(context.request, &generation_guard);
                     Ok(())
                 }
@@ -271,7 +329,7 @@ where
                     upstream,
                     context.request,
                 ) => result,
-                () = generation_guard.wait_until_stale() => {
+                () = generation_guard.wait_until_revoked() => {
                     emit_stale_relay_close(context.request, &generation_guard);
                     Ok(())
                 }
@@ -286,7 +344,7 @@ where
                     &generation_guard,
                     Some(context.middleware_engine),
                 ) => result,
-                () = generation_guard.wait_until_stale() => {
+                () = generation_guard.wait_until_revoked() => {
                     emit_stale_relay_close(context.request, &generation_guard);
                     Ok(())
                 }
@@ -412,7 +470,7 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         let (mut upstream, mut server) = tokio::io::duplex(1024);
-        let engine = OpaEngine::from_strings(POLICY_REGO, EMPTY_POLICY_DATA).unwrap();
+        let engine = Arc::new(OpaEngine::from_strings(POLICY_REGO, EMPTY_POLICY_DATA).unwrap());
         let decision = decision(engine.current_generation());
         let request = request_context();
         let context = prepare_http_relay(None, &engine, &decision, &request).unwrap();
@@ -501,7 +559,7 @@ mod tests {
 
     #[test]
     fn relay_without_route_pins_l4_decision_generation() {
-        let engine = OpaEngine::from_strings(POLICY_REGO, EMPTY_POLICY_DATA).unwrap();
+        let engine = Arc::new(OpaEngine::from_strings(POLICY_REGO, EMPTY_POLICY_DATA).unwrap());
         let decision = decision(engine.current_generation());
         let request = request_context();
 
@@ -519,7 +577,7 @@ mod tests {
 
     #[test]
     fn empty_hydrated_route_cannot_replace_stale_l4_generation() {
-        let engine = OpaEngine::from_strings(POLICY_REGO, EMPTY_POLICY_DATA).unwrap();
+        let engine = Arc::new(OpaEngine::from_strings(POLICY_REGO, EMPTY_POLICY_DATA).unwrap());
         let decision = decision(u64::MAX);
         let route = L7RouteSnapshot {
             configs: vec![],
@@ -535,7 +593,7 @@ mod tests {
 
     #[test]
     fn inspected_route_cannot_replace_stale_l4_generation() {
-        let engine = OpaEngine::from_strings(POLICY_REGO, EMPTY_POLICY_DATA).unwrap();
+        let engine = Arc::new(OpaEngine::from_strings(POLICY_REGO, EMPTY_POLICY_DATA).unwrap());
         let decision = decision(u64::MAX);
         let route = L7RouteSnapshot {
             configs: vec![super::super::L7ConfigSnapshot {
@@ -573,7 +631,7 @@ mod tests {
 
     #[test]
     fn raw_route_cannot_replace_stale_l4_generation() {
-        let engine = OpaEngine::from_strings(POLICY_REGO, EMPTY_POLICY_DATA).unwrap();
+        let engine = Arc::new(OpaEngine::from_strings(POLICY_REGO, EMPTY_POLICY_DATA).unwrap());
         let decision = decision(u64::MAX);
         let route = L7RouteSnapshot {
             configs: vec![],
@@ -588,7 +646,7 @@ mod tests {
 
     #[test]
     fn stale_generation_fails_before_relay_context_is_created() {
-        let engine = OpaEngine::from_strings(POLICY_REGO, EMPTY_POLICY_DATA).unwrap();
+        let engine = Arc::new(OpaEngine::from_strings(POLICY_REGO, EMPTY_POLICY_DATA).unwrap());
         let decision = decision(engine.current_generation());
         let request = request_context();
         engine.reload(POLICY_REGO, EMPTY_POLICY_DATA).unwrap();
@@ -596,6 +654,270 @@ mod tests {
         assert!(
             prepare_http_relay(None, &engine, &decision, &request).is_none(),
             "policy reload must prevent a stale relay from starting"
+        );
+    }
+
+    const REST_POLICY: &str = r#"
+network_policies:
+  rest_api:
+    name: rest_api
+    endpoints:
+      - host: api.example.test
+        port: 8080
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow:
+              method: GET
+              path: "/models"
+    binaries:
+      - { path: /usr/bin/curl }
+"#;
+
+    fn rest_policy_with(extra: &str) -> String {
+        format!("{REST_POLICY}{extra}")
+    }
+
+    const REPOSITORY_RULE: &str = r"  repository:
+    name: repository
+    endpoints:
+      - host: github.example.test
+        port: 443
+    binaries:
+      - { path: /usr/bin/git }
+";
+
+    const HOST_REMOVED: &str = r"
+network_policies:
+  repository:
+    name: repository
+    endpoints:
+      - host: github.example.test
+        port: 443
+    binaries:
+      - { path: /usr/bin/git }
+";
+
+    const BINARY_REMOVED: &str = r#"
+network_policies:
+  rest_api:
+    name: rest_api
+    endpoints:
+      - host: api.example.test
+        port: 8080
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow:
+              method: GET
+              path: "/models"
+    binaries:
+      - { path: /usr/bin/wget }
+"#;
+
+    const RULE_DENIES: &str = r#"
+network_policies:
+  rest_api:
+    name: rest_api
+    endpoints:
+      - host: api.example.test
+        port: 8080
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow:
+              method: GET
+              path: "/other"
+    binaries:
+      - { path: /usr/bin/curl }
+"#;
+
+    /// Authorize a CONNECT the way the proxy does, keeping the exact input.
+    fn admitted_rest_decision(engine: &OpaEngine) -> (EgressDecision, L7RouteSnapshot) {
+        let input = crate::opa::NetworkInput {
+            host: "api.example.test".into(),
+            port: 8080,
+            binary_path: std::path::PathBuf::from("/usr/bin/curl"),
+            binary_sha256: "unused".into(),
+            ancestors: vec![],
+            cmdline_paths: vec![],
+        };
+        let authorization = engine.authorize_egress(&input).unwrap();
+        let decision = EgressDecision {
+            intent: EgressIntent::connect("api.example.test".into(), 8080),
+            action: authorization.action.clone(),
+            policy_generation: authorization.generation,
+            identity: ProcessIdentityEvidence::Available,
+            endpoint: EndpointDecision::from_authorization(&authorization, &input),
+            binary: Some(input.binary_path.clone()),
+            binary_pid: None,
+            ancestors: vec![],
+            cmdline_paths: vec![],
+        };
+        let route = super::super::query_l7_route_snapshot(&decision, "api.example.test", 8080)
+            .expect("REST route");
+        (decision, route)
+    }
+
+    fn rest_request_context() -> L7EvalContext {
+        L7EvalContext {
+            host: "api.example.test".to_string(),
+            port: 8080,
+            request_default_port: Some(8080),
+            policy_name: "rest_api".to_string(),
+            binary_path: "/usr/bin/curl".to_string(),
+            ..request_context()
+        }
+    }
+
+    /// Send one keep-alive request. Returns `true` when it reached upstream
+    /// and its response reached the client.
+    async fn exchange(
+        app: &mut tokio::io::DuplexStream,
+        upstream: &mut tokio::io::DuplexStream,
+    ) -> bool {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        if app
+            .write_all(b"GET /models HTTP/1.1\r\nHost: api.example.test\r\n\r\n")
+            .await
+            .is_err()
+        {
+            // The relay already closed the tunnel.
+            return false;
+        }
+        let mut request = [0u8; 512];
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            upstream.read(&mut request),
+        )
+        .await
+        .expect("upstream must see a request or EOF")
+        .unwrap();
+        if read == 0 {
+            return false;
+        }
+        assert!(request[..read].starts_with(b"GET /models HTTP/1.1\r\n"));
+        upstream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+            .await
+            .unwrap();
+        let mut response = [0u8; 512];
+        let read = tokio::time::timeout(std::time::Duration::from_secs(1), app.read(&mut response))
+            .await
+            .expect("client must see the response")
+            .unwrap();
+        String::from_utf8_lossy(&response[..read]).contains("200 OK")
+    }
+
+    /// Run an inspected CONNECT relay across policy reloads. Each item of
+    /// `reloads` is applied after one successful exchange; the result says
+    /// which exchanges after a reload still reached upstream.
+    async fn relay_across_reloads(reloads: &[&str]) -> Vec<bool> {
+        let engine = Arc::new(OpaEngine::from_strings(POLICY_REGO, REST_POLICY).unwrap());
+        let (decision, route) = admitted_rest_decision(&engine);
+        let (mut app, mut relay_client) = tokio::io::duplex(8192);
+        let (mut relay_upstream, mut upstream) = tokio::io::duplex(8192);
+        let relay_engine = Arc::clone(&engine);
+        let relay = tokio::spawn(async move {
+            let request = rest_request_context();
+            let context = prepare_http_relay(Some(&route), &relay_engine, &decision, &request)
+                .expect("current generation prepares the relay");
+            assert!(matches!(context.policy, PreparedHttpPolicy::Inspect { .. }));
+            relay_http_stream(&mut relay_client, &mut relay_upstream, context).await
+        });
+
+        assert!(exchange(&mut app, &mut upstream).await);
+        let mut results = Vec::new();
+        for reloaded in reloads {
+            engine.reload(POLICY_REGO, reloaded).unwrap();
+            // Let the relay's reload watcher run before the next request.
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            let forwarded = exchange(&mut app, &mut upstream).await;
+            results.push(forwarded);
+            if !forwarded {
+                break;
+            }
+        }
+        drop(app);
+        tokio::time::timeout(std::time::Duration::from_secs(1), relay)
+            .await
+            .expect("relay must finish")
+            .unwrap()
+            .unwrap();
+        results
+    }
+
+    #[tokio::test]
+    async fn stale_tunnel_continues_while_current_policy_still_admits_it() {
+        let unrelated = rest_policy_with(REPOSITORY_RULE);
+        // A reload that only adds rules for another host keeps the tunnel,
+        // and a later reload that removes its host still closes it.
+        assert_eq!(
+            relay_across_reloads(&[&unrelated, REST_POLICY, HOST_REMOVED]).await,
+            vec![true, true, false]
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_tunnel_closes_when_host_is_removed() {
+        assert_eq!(relay_across_reloads(&[HOST_REMOVED]).await, vec![false]);
+    }
+
+    #[tokio::test]
+    async fn stale_tunnel_closes_when_binary_is_removed() {
+        assert_eq!(relay_across_reloads(&[BINARY_REMOVED]).await, vec![false]);
+    }
+
+    #[tokio::test]
+    async fn stale_tunnel_closes_when_l7_rule_now_denies_the_request() {
+        assert_eq!(relay_across_reloads(&[RULE_DENIES]).await, vec![false]);
+    }
+
+    #[tokio::test]
+    async fn stale_tunnel_closes_under_fail_closed_quarantine() {
+        let engine = Arc::new(OpaEngine::from_strings(POLICY_REGO, REST_POLICY).unwrap());
+        let (decision, route) = admitted_rest_decision(&engine);
+        let (_app, mut relay_client) = tokio::io::duplex(8192);
+        let (mut relay_upstream, _upstream) = tokio::io::duplex(8192);
+        let relay_engine = Arc::clone(&engine);
+        let relay = tokio::spawn(async move {
+            let request = rest_request_context();
+            let context =
+                prepare_http_relay(Some(&route), &relay_engine, &decision, &request).unwrap();
+            relay_http_stream(&mut relay_client, &mut relay_upstream, context).await
+        });
+        tokio::task::yield_now().await;
+
+        engine.enter_fail_closed("candidate policy failed").unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), relay)
+            .await
+            .expect("quarantine must close the idle tunnel")
+            .unwrap()
+            .unwrap();
+    }
+
+    #[test]
+    fn relay_started_after_admitting_reload_uses_current_generation() {
+        let engine = Arc::new(OpaEngine::from_strings(POLICY_REGO, REST_POLICY).unwrap());
+        let (decision, route) = admitted_rest_decision(&engine);
+        engine
+            .reload(POLICY_REGO, &rest_policy_with(REPOSITORY_RULE))
+            .unwrap();
+        let request = rest_request_context();
+
+        let context = prepare_http_relay(Some(&route), &engine, &decision, &request)
+            .expect("an admitting reload must not stop the relay");
+        let PreparedHttpPolicy::Inspect { evaluator, .. } = context.policy else {
+            panic!("REST route should be inspected");
+        };
+        assert_eq!(evaluator.captured_generation(), engine.current_generation());
+
+        engine.reload(POLICY_REGO, HOST_REMOVED).unwrap();
+        assert!(
+            prepare_http_relay(Some(&route), &engine, &decision, &request).is_none(),
+            "a denying reload must stop the relay"
         );
     }
 

@@ -3724,7 +3724,7 @@ fn authorize_egress_intent_inner(
             action: authorization.action.clone(),
             policy_generation: authorization.generation,
             identity: ProcessIdentityEvidence::Available,
-            endpoint: EndpointDecision::from_authorization(&authorization),
+            endpoint: EndpointDecision::from_authorization(&authorization, &input),
             binary: Some(bin_path),
             binary_pid: Some(binary_pid),
             ancestors,
@@ -3772,7 +3772,7 @@ fn evaluate_endpoint_only_opa_inner(engine: &OpaEngine, intent: EgressIntent) ->
             identity: ProcessIdentityEvidence::Unavailable(
                 IdentityUnavailableReason::EndpointOnlyMode,
             ),
-            endpoint: EndpointDecision::from_authorization(&authorization),
+            endpoint: EndpointDecision::from_authorization(&authorization, &input),
             binary: None,
             binary_pid: None,
             ancestors: vec![],
@@ -3907,7 +3907,7 @@ fn authorize_supplied_identity_with_denial_inner(
             action: authorization.action.clone(),
             policy_generation: authorization.generation,
             identity: ProcessIdentityEvidence::Available,
-            endpoint: EndpointDecision::from_authorization(&authorization),
+            endpoint: EndpointDecision::from_authorization(&authorization, &input),
             binary: Some(identity.executable.path.clone()),
             binary_pid: None,
             ancestors: ancestor_paths,
@@ -11816,22 +11816,21 @@ network_policies:
     ) {
         let policy = include_str!("../data/sandbox-policy.rego");
         let engine = OpaEngine::from_strings(policy, data).unwrap();
-        let authorization = engine
-            .authorize_egress(&crate::opa::NetworkInput {
-                host: host.to_string(),
-                port,
-                binary_path: PathBuf::from("/usr/bin/node"),
-                binary_sha256: String::new(),
-                ancestors: vec![],
-                cmdline_paths: vec![],
-            })
-            .expect("authorize egress");
+        let input = crate::opa::NetworkInput {
+            host: host.to_string(),
+            port,
+            binary_path: PathBuf::from("/usr/bin/node"),
+            binary_sha256: String::new(),
+            ancestors: vec![],
+            cmdline_paths: vec![],
+        };
+        let authorization = engine.authorize_egress(&input).expect("authorize egress");
         let decision = EgressDecision {
             intent: EgressIntent::forward_http(host.to_string(), port),
             action: authorization.action.clone(),
             policy_generation: authorization.generation,
             identity: ProcessIdentityEvidence::Available,
-            endpoint: EndpointDecision::from_authorization(&authorization),
+            endpoint: EndpointDecision::from_authorization(&authorization, &input),
             binary: Some(PathBuf::from("/usr/bin/node")),
             binary_pid: None,
             ancestors: vec![],
@@ -15451,7 +15450,7 @@ network_policies:
                 action: authorization.action.clone(),
                 policy_generation: authorization.generation,
                 identity: ProcessIdentityEvidence::Available,
-                endpoint: EndpointDecision::from_authorization(&authorization),
+                endpoint: EndpointDecision::from_authorization(&authorization, &input),
                 binary: Some(input.binary_path),
                 binary_pid: Some(1),
                 ancestors: vec![],
