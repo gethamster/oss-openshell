@@ -1136,6 +1136,8 @@ where
             // A raw stream has no request boundary for re-admission, so any
             // policy reload closes it.
             engine.generation_guard().end_readmission();
+            // A reload before this point that left the tunnel stale closes it now.
+            engine.generation_guard().ensure_current()?;
             tokio::io::copy_bidirectional(client, upstream)
                 .await
                 .into_diagnostic()?;
@@ -3811,6 +3813,9 @@ where
                 // The upgraded stream has no request boundary, so any later
                 // policy reload closes it.
                 generation_guard.end_readmission();
+                // A reload before this point that left the tunnel stale closes it now:
+                // the upgraded stream gets no later re-admission.
+                generation_guard.ensure_current()?;
                 return handle_upgrade(
                     client,
                     upstream,
