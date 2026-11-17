@@ -212,15 +212,16 @@ pub(crate) async fn prepare_inspected_request(
             L7Protocol::Rest | L7Protocol::Websocket | L7Protocol::Sql => {}
         }
         let owners = admitted_token_grant_owners(engine, &scoped, &current_info)?;
+        // A re-admitted tunnel reports under the policy that re-admitted it.
+        let policy_hash = engine.policy_hash_for_status(&config.policy_hash)?;
         crate::l7::token_grant_injection::inject_for_admitted_owners(
             req,
             &scoped,
             snapshot,
             &owners,
             request_id,
-            observation_context.filter(|context| {
-                context.matches_config(&config.policy_hash, Some(snapshot.revision))
-            }),
+            observation_context
+                .filter(|context| context.matches_config(&policy_hash, Some(snapshot.revision))),
         )
         .await?
     } else {
@@ -722,6 +723,7 @@ where
         ctx.provider_credential_revision,
         Some(engine.generation_guard()),
     );
+    let middleware_runner = engine.middleware_runner()?;
     relay_http_request_with_credential_rejection_observed(
         &request,
         client,
@@ -756,7 +758,7 @@ where
             ctx.request_scheme(),
             request_id,
             response_chain,
-            &engine.middleware_runner(),
+            &middleware_runner,
             Some(engine.generation_guard()),
         )),
         observer.as_ref(),
@@ -1190,6 +1192,7 @@ where
             .endpoint_observation_tx
             .as_ref()
             .and_then(EndpointObservationSender::capture);
+        let observed_generation = engine.captured_generation();
         let mut req = match provider.parse_request(client).await {
             Ok(Some(req)) => req,
             Ok(None) => return Ok(()),
@@ -1409,6 +1412,12 @@ where
         if close_if_stale(engine.generation_guard(), ctx) {
             return Ok(());
         }
+        let observation_context = observation_context_after_readmission(
+            observation_context,
+            observed_generation,
+            engine.generation_guard(),
+            ctx,
+        );
 
         let decision_str = match (allowed, config.enforcement) {
             (_, _) if force_deny => "deny",
@@ -1444,7 +1453,7 @@ where
                 client,
                 ctx,
                 chain,
-                &engine.middleware_runner(),
+                &engine.middleware_runner()?,
                 engine.generation_guard(),
                 openshell_supervisor_middleware::TransformedBodyPolicy::Reevaluate(&validate),
                 &request_id,
@@ -1495,7 +1504,7 @@ where
                 let preflight = websocket_middleware_preflight(
                     &req,
                     chain,
-                    &engine.middleware_runner(),
+                    &engine.middleware_runner()?,
                     ctx,
                     ctx.websocket_scheme(),
                 )
@@ -2059,6 +2068,7 @@ where
             .as_ref()
             .filter(|_| ctx.token_grant_resolver.is_some())
             .and_then(EndpointObservationSender::capture);
+        let observed_generation = engine.captured_generation();
         // Parse one HTTP request from client
         let req = match provider.parse_request(client).await {
             Ok(Some(req)) => req,
@@ -2130,6 +2140,12 @@ where
         if close_if_stale(engine.generation_guard(), ctx) {
             return Ok(());
         }
+        let observation_context = observation_context_after_readmission(
+            observation_context,
+            observed_generation,
+            engine.generation_guard(),
+            ctx,
+        );
 
         // Check if this is an upgrade request for logging purposes.
         let header_end = req
@@ -2199,7 +2215,7 @@ where
                 client,
                 ctx,
                 chain,
-                &engine.middleware_runner(),
+                &engine.middleware_runner()?,
                 engine.generation_guard(),
                 openshell_supervisor_middleware::TransformedBodyPolicy::NotPolicyRelevant,
                 &request_id,
@@ -2247,7 +2263,7 @@ where
                 let preflight = websocket_middleware_preflight(
                     &req,
                     chain,
-                    &engine.middleware_runner(),
+                    &engine.middleware_runner()?,
                     ctx,
                     ctx.websocket_scheme(),
                 )
@@ -2407,6 +2423,28 @@ fn close_if_tunnel_stale(engine: &TunnelPolicyEngine, ctx: &L7EvalContext) -> bo
     true
 }
 
+/// Observation authority for a request whose tunnel was re-admitted after
+/// the authority was captured.
+///
+/// The authority captured at request start belongs to the inventory of the
+/// earlier policy. After re-admission, the request is decided and reported
+/// under the current policy, so its status must be checked against the
+/// current inventory. A request that was not re-admitted keeps the authority
+/// captured at its start. No authority stays no authority.
+fn observation_context_after_readmission(
+    captured: Option<openshell_core::endpoint_status::EndpointObservationContext>,
+    captured_at_generation: u64,
+    guard: &PolicyGenerationGuard,
+    ctx: &L7EvalContext,
+) -> Option<openshell_core::endpoint_status::EndpointObservationContext> {
+    if captured.is_none() || guard.captured_generation() == captured_at_generation {
+        return captured;
+    }
+    ctx.endpoint_observation_tx
+        .as_ref()
+        .and_then(EndpointObservationSender::capture)
+}
+
 /// Move a stale tunnel evaluator to the current generation when the current
 /// policy re-admits it. Returns `false` when the caller must fail closed.
 fn readmit_tunnel(engine: &TunnelPolicyEngine, ctx: &L7EvalContext) -> bool {
@@ -2529,6 +2567,7 @@ where
             .endpoint_observation_tx
             .as_ref()
             .and_then(EndpointObservationSender::capture);
+        let observed_generation = engine.captured_generation();
         let parsed = match crate::l7::jsonrpc::parse_jsonrpc_http_request(
             client,
             config.json_rpc_max_body_bytes,
@@ -2631,6 +2670,12 @@ where
         if close_if_stale(engine.generation_guard(), ctx) {
             return Ok(());
         }
+        let observation_context = observation_context_after_readmission(
+            observation_context,
+            observed_generation,
+            engine.generation_guard(),
+            ctx,
+        );
 
         let decision_str = match (allowed, config.enforcement) {
             (_, _) if force_deny => "deny",
@@ -2687,7 +2732,7 @@ where
                 client,
                 ctx,
                 chain,
-                &engine.middleware_runner(),
+                &engine.middleware_runner()?,
                 engine.generation_guard(),
                 openshell_supervisor_middleware::TransformedBodyPolicy::Reevaluate(&validate),
                 &request_id,
@@ -2814,6 +2859,7 @@ where
             .as_ref()
             .filter(|_| ctx.token_grant_resolver.is_some())
             .and_then(EndpointObservationSender::capture);
+        let observed_generation = engine.captured_generation();
         // Validate the head, including body framing, before deciding whether
         // this endpoint can inspect the requested protocol. Upgrade refusal
         // must not wait for a body or depend on its inspection size limit.
@@ -2914,6 +2960,12 @@ where
         if close_if_stale(engine.generation_guard(), ctx) {
             return Ok(());
         }
+        let observation_context = observation_context_after_readmission(
+            observation_context,
+            observed_generation,
+            engine.generation_guard(),
+            ctx,
+        );
 
         let decision_str = match (allowed, config.enforcement) {
             (_, _) if force_deny => "deny",
@@ -2970,7 +3022,7 @@ where
                 client,
                 ctx,
                 chain,
-                &engine.middleware_runner(),
+                &engine.middleware_runner()?,
                 engine.generation_guard(),
                 openshell_supervisor_middleware::TransformedBodyPolicy::Reevaluate(&validate),
                 &request_id,
@@ -5856,7 +5908,7 @@ network_policies:
     #[tokio::test]
     async fn l7_rest_exhausted_middleware_admission_returns_503_before_body_or_upstream() {
         let (config, tunnel_engine, ctx) = middleware_relay_context("openshell/regex", "fail_open");
-        let runner = tunnel_engine.middleware_runner().clone();
+        let runner = tunnel_engine.middleware_runner().unwrap();
 
         let mut active = Vec::new();
         for _ in 0..openshell_supervisor_middleware::MAX_CONCURRENT_MIDDLEWARE_WORK {
@@ -11069,6 +11121,206 @@ network_policies:
         assert_eq!(
             n, 0,
             "stale passthrough request must not be forwarded upstream"
+        );
+    }
+
+    const PASSTHROUGH_POLICY: &str = r"
+network_policies:
+  rest_api:
+    name: rest_api
+    endpoints:
+      - host: api.example.test
+        port: 8080
+    binaries:
+      - { path: /usr/bin/curl }
+";
+    const PASSTHROUGH_UNRELATED_RULE_ADDED: &str = r"
+network_policies:
+  rest_api:
+    name: rest_api
+    endpoints:
+      - host: api.example.test
+        port: 8080
+    binaries:
+      - { path: /usr/bin/curl }
+  repository:
+    name: repository
+    endpoints:
+      - host: github.example.test
+        port: 443
+    binaries:
+      - { path: /usr/bin/git }
+";
+    const PASSTHROUGH_HOST_REMOVED: &str = r"
+network_policies:
+  repository:
+    name: repository
+    endpoints:
+      - host: github.example.test
+        port: 443
+    binaries:
+      - { path: /usr/bin/git }
+";
+
+    /// A stand-alone passthrough guard with the CONNECT admission that
+    /// re-checks the tunnel after a policy reload.
+    fn readmittable_passthrough_guard(
+        engine: &Arc<OpaEngine>,
+    ) -> (PolicyGenerationGuard, L7EvalContext) {
+        let input = NetworkInput {
+            host: "api.example.test".into(),
+            port: 8080,
+            binary_path: PathBuf::from("/usr/bin/curl"),
+            binary_sha256: "unused".into(),
+            ancestors: vec![],
+            cmdline_paths: vec![],
+        };
+        let authorization = engine.authorize_egress(&input).unwrap();
+        let admission = crate::opa::TunnelAdmission::new(
+            input,
+            &authorization.action,
+            authorization.endpoint_configs,
+            authorization.matched_endpoints,
+            authorization.exact_declared_endpoint_host,
+        )
+        .expect("policy allows the tunnel");
+        let guard = engine
+            .generation_guard(authorization.generation)
+            .unwrap()
+            .with_readmission(crate::opa::TunnelReadmission::new(
+                Arc::clone(engine),
+                admission,
+            ));
+        let ctx = L7EvalContext {
+            host: "api.example.test".into(),
+            port: 8080,
+            request_default_port: Some(8080),
+            policy_name: "rest_api".into(),
+            binary_path: "/usr/bin/curl".into(),
+            ..Default::default()
+        };
+        (guard, ctx)
+    }
+
+    async fn read_some(stream: &mut tokio::io::DuplexStream, what: &str) -> String {
+        let mut buffer = [0u8; 1024];
+        let n = tokio::time::timeout(std::time::Duration::from_secs(1), stream.read(&mut buffer))
+            .await
+            .unwrap_or_else(|_| panic!("{what}"))
+            .unwrap();
+        String::from_utf8_lossy(&buffer[..n]).into_owned()
+    }
+
+    #[tokio::test]
+    async fn passthrough_relay_readmits_guard_after_compatible_reload() {
+        let engine = Arc::new(OpaEngine::from_strings(TEST_POLICY, PASSTHROUGH_POLICY).unwrap());
+        let (generation_guard, ctx) = readmittable_passthrough_guard(&engine);
+        let (mut app, mut relay_client) = tokio::io::duplex(8192);
+        let (mut relay_upstream, mut upstream) = tokio::io::duplex(8192);
+        let relay = tokio::spawn(async move {
+            relay_passthrough_with_credentials(
+                &mut relay_client,
+                &mut relay_upstream,
+                &ctx,
+                &generation_guard,
+                None,
+            )
+            .await
+        });
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: keep-alive\r\n\r\nOK";
+
+        for (path, reloaded) in [
+            ("/first", None),
+            ("/second", Some(PASSTHROUGH_UNRELATED_RULE_ADDED)),
+        ] {
+            if let Some(reloaded) = reloaded {
+                engine.reload(TEST_POLICY, reloaded).unwrap();
+            }
+            app.write_all(
+                format!("GET {path} HTTP/1.1\r\nHost: api.example.test\r\nConnection: keep-alive\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+            let forwarded = read_some(&mut upstream, "request should reach upstream").await;
+            assert!(
+                forwarded.starts_with(&format!("GET {path} HTTP/1.1")),
+                "{forwarded:?}"
+            );
+            upstream.write_all(response).await.unwrap();
+            let relayed = read_some(&mut app, "response should reach client").await;
+            assert!(relayed.contains("200 OK"), "{relayed:?}");
+        }
+
+        engine
+            .reload(TEST_POLICY, PASSTHROUGH_HOST_REMOVED)
+            .unwrap();
+        app.write_all(
+            b"GET /third HTTP/1.1\r\nHost: api.example.test\r\nConnection: keep-alive\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), relay)
+            .await
+            .expect("a reload that denies the tunnel closes it")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            read_some(&mut upstream, "upstream side should close").await,
+            "",
+            "a revoked request must not be forwarded upstream"
+        );
+    }
+
+    #[tokio::test]
+    async fn passthrough_upgrade_closes_when_tunnel_went_stale_before_the_upgrade() {
+        let engine = Arc::new(OpaEngine::from_strings(TEST_POLICY, PASSTHROUGH_POLICY).unwrap());
+        let (generation_guard, ctx) = readmittable_passthrough_guard(&engine);
+        let (mut app, mut relay_client) = tokio::io::duplex(8192);
+        let (mut relay_upstream, mut upstream) = tokio::io::duplex(8192);
+        let relay = tokio::spawn(async move {
+            relay_passthrough_with_credentials(
+                &mut relay_client,
+                &mut relay_upstream,
+                &ctx,
+                &generation_guard,
+                None,
+            )
+            .await
+        });
+
+        app.write_all(
+            b"GET /socket HTTP/1.1\r\nHost: api.example.test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        let forwarded = read_some(&mut upstream, "upgrade request should reach upstream").await;
+        assert!(
+            forwarded.starts_with("GET /socket HTTP/1.1"),
+            "{forwarded:?}"
+        );
+
+        // The reload still allows the tunnel, but it happens after the last
+        // request boundary. The upgraded stream must not outlive it.
+        engine
+            .reload(TEST_POLICY, PASSTHROUGH_UNRELATED_RULE_ADDED)
+            .unwrap();
+        upstream
+            .write_all(
+                b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n",
+            )
+            .await
+            .unwrap();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), relay)
+            .await
+            .expect("a stale upgraded stream closes")
+            .unwrap();
+        assert!(result.is_err(), "stale upgrade fails closed");
+        assert_eq!(
+            read_some(&mut upstream, "upstream side should close").await,
+            "",
+            "no stream bytes after the stale upgrade"
         );
     }
 

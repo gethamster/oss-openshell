@@ -118,7 +118,7 @@ pub struct EgressAuthorization {
 }
 
 /// Input for a network access policy evaluation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NetworkInput {
     pub host: String,
     pub port: u16,
@@ -187,6 +187,9 @@ pub struct OpaEngine {
     websocket_assembly_budget: crate::l7::websocket::WebSocketAssemblyBudget,
     generation_tx: watch::Sender<u64>,
     fail_closed_reason: RwLock<Option<String>>,
+    /// Egress authorizations shared by tunnel re-admission checks within
+    /// one policy generation.
+    readmission_memo: readmission::ReadmissionMemo,
 }
 
 #[cfg(test)]
@@ -288,6 +291,9 @@ pub struct TunnelPolicyEngine {
     generation_guard: PolicyGenerationGuard,
     middleware_runner: RwLock<ChainRunner>,
     websocket_assembly_budget: crate::l7::websocket::WebSocketAssemblyBudget,
+    /// Whole-policy hash of the generation that last re-admitted this
+    /// tunnel. `None` until a re-admission that carries a hash.
+    readmitted_policy_hash: RwLock<Option<String>>,
 }
 
 impl TunnelPolicyEngine {
@@ -312,11 +318,11 @@ impl TunnelPolicyEngine {
     }
 
     /// Middleware runner of the generation this tunnel currently uses.
-    pub(crate) fn middleware_runner(&self) -> ChainRunner {
-        self.middleware_runner.read().map_or_else(
-            |poisoned| poisoned.into_inner().clone(),
-            |runner| runner.clone(),
-        )
+    pub(crate) fn middleware_runner(&self) -> Result<ChainRunner> {
+        self.middleware_runner
+            .read()
+            .map(|runner| runner.clone())
+            .map_err(|_| miette::miette!("middleware runner lock poisoned"))
     }
 
     pub(crate) fn websocket_assembly_budget(
@@ -353,6 +359,7 @@ impl OpaEngine {
             websocket_assembly_budget: crate::l7::websocket::WebSocketAssemblyBudget::default(),
             generation_tx,
             fail_closed_reason: RwLock::new(None),
+            readmission_memo: readmission::ReadmissionMemo::default(),
         }
     }
 
@@ -1174,6 +1181,7 @@ impl OpaEngine {
             generation_guard,
             middleware_runner: RwLock::new(self.middleware_runner()?),
             websocket_assembly_budget: self.websocket_assembly_budget(),
+            readmitted_policy_hash: RwLock::new(None),
         })
     }
 }

@@ -162,6 +162,20 @@ struct Fixture {
     state: ProviderCredentialState,
     resolver: Arc<ScriptedResolver>,
     observation: Option<EndpointObservationSender>,
+    /// Attach CONNECT admission state, so a policy reload that still allows
+    /// the tunnel re-admits it instead of closing it.
+    readmission: bool,
+}
+
+fn fixture_input() -> NetworkInput {
+    NetworkInput {
+        host: HOST.into(),
+        port: PORT,
+        binary_path: PathBuf::from("/usr/bin/curl"),
+        binary_sha256: "unused".into(),
+        ancestors: vec![],
+        cmdline_paths: vec![],
+    }
 }
 
 impl Fixture {
@@ -233,7 +247,62 @@ impl Fixture {
             ),
             resolver: Arc::new(ScriptedResolver::default()),
             observation: None,
+            readmission: false,
         }
+    }
+
+    /// Stamp a whole-policy hash into every endpoint, as policy conversion
+    /// does for a gateway policy, and load it as a new generation.
+    fn stamp_policy_hash(&mut self, policy_hash: &str) {
+        let mut data: serde_json::Value =
+            serde_json::from_str(&self.policy_data).expect("fixture policy data");
+        for policy in data["network_policies"]
+            .as_object_mut()
+            .expect("fixture policies")
+            .values_mut()
+        {
+            for endpoint in policy["endpoints"].as_array_mut().expect("endpoints") {
+                endpoint["policy_hash"] = policy_hash.into();
+            }
+        }
+        self.policy_data = data.to_string();
+        self.reload_policy();
+        let (raw_configs, generation) = self
+            .engine
+            .query_endpoint_configs_with_generation(&fixture_input())
+            .expect("OPA endpoint query");
+        assert_eq!(generation, self.generation);
+        self.configs = raw_configs
+            .iter()
+            .map(|raw| crate::l7::parse_l7_config(raw).expect("OPA endpoint config"))
+            .collect();
+    }
+
+    fn tunnel_engine(&self) -> TunnelPolicyEngine {
+        let engine = self
+            .engine
+            .clone_engine_for_tunnel(self.generation)
+            .expect("tunnel policy snapshot");
+        if !self.readmission {
+            return engine;
+        }
+        let authorization = self
+            .engine
+            .authorize_egress(&fixture_input())
+            .expect("CONNECT authorization");
+        assert_eq!(authorization.generation, self.generation);
+        let admission = crate::opa::TunnelAdmission::new(
+            fixture_input(),
+            &authorization.action,
+            authorization.endpoint_configs,
+            authorization.matched_endpoints,
+            authorization.exact_declared_endpoint_host,
+        )
+        .expect("fixture policy allows the tunnel");
+        engine.with_readmission(crate::opa::TunnelReadmission::new(
+            self.engine.clone(),
+            admission,
+        ))
     }
 
     fn install(&self, revision: u64, grants: &[(&str, &str, &str)]) {
@@ -280,10 +349,7 @@ impl Fixture {
     ) -> Connection {
         let configs = self.configs.clone();
         let middleware_engine = self.engine.clone();
-        let engine = self
-            .engine
-            .clone_engine_for_tunnel(self.generation)
-            .expect("tunnel policy snapshot");
+        let engine = self.tunnel_engine();
         let ctx = L7EvalContext {
             host: HOST.into(),
             port: PORT,
@@ -1154,6 +1220,130 @@ async fn policy_reload_during_grant_closes_old_tunnel_and_reconnects() {
 #[tokio::test]
 async fn route_selected_policy_reload_during_grant_closes_old_tunnel_and_reconnects() {
     policy_reload_during_grant(true).await;
+}
+
+#[tokio::test]
+async fn policy_reload_during_grant_closes_readmittable_tunnel() {
+    // The reload still allows the tunnel, but the request decision was made
+    // under the earlier generation: the strict check after the grant closes.
+    for route_selection in [false, true] {
+        let mut fixture = refresh_fixture(route_selection);
+        fixture.readmission = true;
+        fixture.resolver.hold_once.store(true, Ordering::SeqCst);
+        let mut connection = fixture.connect();
+        connection.send("GET", "/a/item", true).await;
+        timeout(WAIT, fixture.resolver.entered.notified())
+            .await
+            .expect("grant enters before policy reload");
+        fixture.reload_policy();
+        fixture.resolver.release.notify_one();
+        let refused = connection.response().await;
+        assert!(refused.starts_with("HTTP/1.1 502"), "{refused}");
+        assert!(
+            connection.observes_eof().await,
+            "in-flight request closes the tunnel"
+        );
+        let capture = connection.finish().await;
+        assert_eq!(capture.bytes_seen, 0, "stale request forwards nothing");
+    }
+}
+
+#[tokio::test]
+async fn readmitted_tunnel_does_not_inject_credential_detached_by_reload() {
+    for route_selection in [false, true] {
+        let mut fixture = refresh_fixture(route_selection);
+        fixture.readmission = true;
+        let old_key = fixture.grant_key("/a/**", "a");
+        let mut connection = fixture.connect();
+        let first = connection.exchange("GET", "/a/first", true).await;
+        // A configuration reload publishes policy and provider state together.
+        fixture.reload_policy();
+        fixture.install(2, &[]);
+        let second = connection.exchange("GET", "/a/second", false).await;
+        let capture = connection.finish().await;
+
+        assert!(first.starts_with("HTTP/1.1 204"), "{first}");
+        assert!(
+            second.starts_with("HTTP/1.1 204"),
+            "the tunnel is re-admitted: {second}"
+        );
+        assert_eq!(capture.requests.len(), 2);
+        assert_authorization(&capture.requests[0], "aud-old");
+        assert_no_authorization(&Capture {
+            requests: capture.requests[1..].to_vec(),
+            ..Capture::default()
+        });
+        fixture.resolver.assert_calls(&[(&old_key, "aud-old")]);
+    }
+}
+
+#[tokio::test]
+async fn readmitted_tunnel_reports_grant_status_under_the_current_policy_hash() {
+    use openshell_core::endpoint_status::{
+        EndpointConfigVersion, EndpointStatusCommand, endpoint_status_channel,
+    };
+
+    async fn publish_inventory(
+        sender: &EndpointObservationSender,
+        receiver: &mut openshell_core::endpoint_status::EndpointStatusReceiver,
+        policy_hash: &str,
+    ) {
+        sender
+            .reset(
+                EndpointConfigVersion {
+                    policy_hash: policy_hash.into(),
+                    provider_env_revision: 1,
+                },
+                Vec::new(),
+            )
+            .await
+            .expect("install endpoint inventory");
+        assert!(matches!(
+            receiver.recv().await,
+            Some(EndpointStatusCommand::Reset { .. })
+        ));
+    }
+    fn grant_reports(
+        receiver: &mut openshell_core::endpoint_status::EndpointStatusReceiver,
+    ) -> usize {
+        let mut reports = 0;
+        while let Ok(command) = receiver.try_recv() {
+            match command {
+                EndpointStatusCommand::ObserveTokenGrant { result: Ok(_), .. } => reports += 1,
+                other => panic!("unexpected status command: {other:?}"),
+            }
+        }
+        reports
+    }
+
+    for route_selection in [false, true] {
+        let mut fixture = refresh_fixture(route_selection);
+        fixture.stamp_policy_hash("policy-a");
+        fixture.readmission = true;
+        let (sender, mut receiver) = endpoint_status_channel();
+        publish_inventory(&sender, &mut receiver, "policy-a").await;
+        fixture.observation = Some(sender.clone());
+
+        let mut connection = fixture.connect();
+        let first = connection.exchange("GET", "/a/first", true).await;
+        assert!(first.starts_with("HTTP/1.1 204"), "{first}");
+        assert_eq!(grant_reports(&mut receiver), 1, "admitted policy reports");
+
+        // Only the whole-policy hash changes, so the tunnel is re-admitted.
+        // The sandbox then publishes the inventory of the new policy.
+        fixture.stamp_policy_hash("policy-b");
+        publish_inventory(&sender, &mut receiver, "policy-b").await;
+        let second = connection.exchange("GET", "/a/second", true).await;
+        let capture = connection.finish().await;
+
+        assert!(second.starts_with("HTTP/1.1 204"), "{second}");
+        assert_eq!(capture.requests.len(), 2);
+        assert_eq!(
+            grant_reports(&mut receiver),
+            1,
+            "re-admitted tunnel reports under the current policy"
+        );
+    }
 }
 
 fn assert_cache_acquisitions(resolver: &CachedTokenGrantResolver, expected: &[(&str, &str)]) {
