@@ -33,6 +33,9 @@ use tokio::sync::watch;
 use tracing::info;
 
 mod raw_schema;
+mod readmission;
+
+pub use readmission::{TunnelAdmission, TunnelReadmission};
 
 /// Baked-in rego rules for OPA policy evaluation.
 /// These rules define the network access decision logic and static config
@@ -85,7 +88,7 @@ pub enum NetworkAction {
 }
 
 /// Endpoint identity and metadata captured with one policy generation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchedEndpoint {
     pub policy_name: String,
     pub endpoint_index: usize,
@@ -115,6 +118,7 @@ pub struct EgressAuthorization {
 }
 
 /// Input for a network access policy evaluation.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkInput {
     pub host: String,
     pub port: u16,
@@ -204,16 +208,44 @@ pub(crate) fn test_opa_query_count() -> u64 {
 }
 
 /// Generation guard captured when an HTTP tunnel or request path starts.
+///
+/// Clones share the captured generation, so a tunnel that is re-admitted
+/// under a newer policy generation moves every clone of its guard with it.
 #[derive(Clone, Debug)]
 pub struct PolicyGenerationGuard {
-    captured_generation: u64,
+    captured_generation: Arc<AtomicU64>,
     current_generation: Arc<AtomicU64>,
     generation_rx: watch::Receiver<u64>,
+    /// Admission state used to re-check the tunnel after a policy reload.
+    /// Without it, a stale guard always fails closed.
+    readmission: Option<Arc<TunnelReadmission>>,
+    /// Shared by clones. Set when the tunnel becomes a stream without
+    /// request boundaries, which must close on any reload.
+    readmission_ended: Arc<std::sync::atomic::AtomicBool>,
+    /// The guard belongs to a `TunnelPolicyEngine`. Only the engine can move
+    /// it to a new generation, because the engine must also replace its
+    /// cloned policy and middleware runner.
+    engine_bound: bool,
 }
 
 impl PolicyGenerationGuard {
+    fn new(
+        captured_generation: u64,
+        current_generation: Arc<AtomicU64>,
+        generation_rx: watch::Receiver<u64>,
+    ) -> Self {
+        Self {
+            captured_generation: Arc::new(AtomicU64::new(captured_generation)),
+            current_generation,
+            generation_rx,
+            readmission: None,
+            readmission_ended: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            engine_bound: false,
+        }
+    }
+
     pub fn captured_generation(&self) -> u64 {
-        self.captured_generation
+        self.captured_generation.load(Ordering::Acquire)
     }
 
     pub fn current_generation(&self) -> u64 {
@@ -221,7 +253,7 @@ impl PolicyGenerationGuard {
     }
 
     pub fn is_stale(&self) -> bool {
-        self.current_generation() != self.captured_generation
+        self.current_generation() != self.captured_generation()
     }
 
     pub fn ensure_current(&self) -> Result<()> {
@@ -254,7 +286,7 @@ impl PolicyGenerationGuard {
 pub struct TunnelPolicyEngine {
     engine: Mutex<regorus::Engine>,
     generation_guard: PolicyGenerationGuard,
-    middleware_runner: ChainRunner,
+    middleware_runner: RwLock<ChainRunner>,
     websocket_assembly_budget: crate::l7::websocket::WebSocketAssemblyBudget,
 }
 
@@ -279,8 +311,12 @@ impl TunnelPolicyEngine {
         &self.engine
     }
 
-    pub(crate) fn middleware_runner(&self) -> &ChainRunner {
-        &self.middleware_runner
+    /// Middleware runner of the generation this tunnel currently uses.
+    pub(crate) fn middleware_runner(&self) -> ChainRunner {
+        self.middleware_runner.read().map_or_else(
+            |poisoned| poisoned.into_inner().clone(),
+            |runner| runner.clone(),
+        )
     }
 
     pub(crate) fn websocket_assembly_budget(
@@ -934,11 +970,11 @@ impl OpaEngine {
                 "policy changed before HTTP relay started [expected_generation:{expected_generation} current_generation:{generation}]"
             ));
         }
-        Ok(PolicyGenerationGuard {
-            captured_generation: generation,
-            current_generation: Arc::clone(&self.generation),
-            generation_rx: self.generation_tx.subscribe(),
-        })
+        Ok(PolicyGenerationGuard::new(
+            generation,
+            Arc::clone(&self.generation),
+            self.generation_tx.subscribe(),
+        ))
     }
 
     /// Query static sandbox configuration from the OPA data module.
@@ -1128,14 +1164,16 @@ impl OpaEngine {
                 "policy changed before L7 tunnel started [expected_generation:{expected_generation} current_generation:{generation}]"
             ));
         }
+        let mut generation_guard = PolicyGenerationGuard::new(
+            generation,
+            Arc::clone(&self.generation),
+            self.generation_tx.subscribe(),
+        );
+        generation_guard.engine_bound = true;
         Ok(TunnelPolicyEngine {
             engine: Mutex::new(engine.clone()),
-            generation_guard: PolicyGenerationGuard {
-                captured_generation: generation,
-                current_generation: Arc::clone(&self.generation),
-                generation_rx: self.generation_tx.subscribe(),
-            },
-            middleware_runner: self.middleware_runner()?,
+            generation_guard,
+            middleware_runner: RwLock::new(self.middleware_runner()?),
             websocket_assembly_budget: self.websocket_assembly_budget(),
         })
     }
