@@ -419,6 +419,25 @@ sa_token_ttl_secs      = 3600
 namespace = "openshell"
 ```
 
+### Issuer on the same host
+
+When the identity service runs on the gateway's host, the issuer's public name
+can resolve to an edge outside the host. Add `issuer_transport_origin` to
+`[openshell.gateway.oidc]` to read discovery and keys on the identity service's
+own listener:
+
+```toml
+issuer                  = "https://idp.example.com"
+issuer_transport_origin = "http://127.0.0.1:17314"
+```
+
+The value is a plain HTTP origin on a numeric loopback address. Requests for the
+issuer's origin go there with the public issuer host in `Host`,
+`X-Forwarded-Host` and `X-Forwarded-Proto`. The discovery document must still
+name the public issuer, and tokens are verified against it. A JWKS origin from
+`jwks_allowed_origins` and any other federated issuer keep their own addresses.
+This setting does not need `dangerously_allow_insecure_http`.
+
 ### Federated OIDC issuers
 
 A shared gateway can trust independently administered issuers through an

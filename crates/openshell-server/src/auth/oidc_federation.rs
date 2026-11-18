@@ -221,6 +221,13 @@ impl Federation {
                     issuer: registration.issuer.clone(),
                     audience: registration.audience.clone(),
                     federation_registry_url: None,
+                    // The transport origin is the configured issuer's own
+                    // listener; another registered issuer keeps its address.
+                    issuer_transport_origin: self
+                        .config
+                        .issuer_transport_origin
+                        .clone()
+                        .filter(|_| registration.issuer == self.config.issuer),
                     jwks_ttl_secs: 30,
                     jwks_allowed_origins: Vec::new(),
                     ..self.config.clone()
@@ -322,6 +329,7 @@ mod tests {
             issuer: issuer.server.uri(),
             audience: "api".into(),
             federation_registry_url: Some(format!("{}/registry", registry.uri())),
+            issuer_transport_origin: None,
             dangerously_allow_insecure_http: true,
             jwks_allowed_origins: vec![],
             jwks_ttl_secs: 30,
@@ -390,6 +398,65 @@ mod tests {
             1
         );
         assert_eq!(hits(&issuer.server, "/keys").await, 1);
+    }
+    /// The configured issuer's listener serves that issuer's registration too,
+    /// which is every token on a single-installation gateway. Another registered
+    /// issuer keeps its own address.
+    #[tokio::test]
+    async fn the_issuer_transport_origin_serves_only_the_configured_issuer() {
+        let home = Issuer::new().await;
+        let other = Issuer::new().await;
+        home.server.reset().await;
+        // The identity service's own listener answers as the home issuer.
+        let listener = MockServer::start().await;
+        let home_uri = home.server.uri();
+        Mock::given(method("GET"))
+            .and(path("/.well-known/openid-configuration"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(
+                    json!({"issuer":home_uri,"jwks_uri":format!("{home_uri}/keys")}),
+                ),
+            )
+            .mount(&listener)
+            .await;
+        Mock::given(method("GET")).and(path("/keys"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"keys":[{"kid":"key","kty":"OKP","crv":"Ed25519","x":home.x,"alg":"EdDSA"}]})))
+            .mount(&listener).await;
+        let registry = MockServer::start().await;
+        registrations(
+            &registry,
+            vec![
+                json!({"issuer":home_uri,"audience":"api","subjects":["agent"]}),
+                json!({"issuer":other.server.uri(),"audience":"api","subjects":["agent"]}),
+            ],
+        )
+        .await;
+        let config = OidcConfig {
+            issuer: home_uri.clone(),
+            audience: "api".into(),
+            federation_registry_url: Some(format!("{}/registry", registry.uri())),
+            issuer_transport_origin: Some(listener.uri()),
+            dangerously_allow_insecure_http: true,
+            jwks_allowed_origins: vec![],
+            jwks_ttl_secs: 30,
+            roles_claim: "roles".into(),
+            admin_role: "openshell-admin".into(),
+            user_role: "openshell-user".into(),
+            scopes_claim: String::new(),
+        };
+        let cache = JwksCache::new(&config).await.unwrap();
+        let federation = cache.federation.as_ref().unwrap();
+        assert!(federation.authenticate(&home.token("agent")).await.is_ok());
+        assert!(federation.authenticate(&other.token("agent")).await.is_ok());
+        // The home issuer's public address was never asked: the gateway's own
+        // cache and the home registration both read the listener.
+        assert!(home.server.received_requests().await.unwrap().is_empty());
+        assert_eq!(
+            hits(&listener, "/.well-known/openid-configuration").await,
+            2
+        );
+        assert_eq!(hits(&listener, "/keys").await, 2);
+        assert_eq!(hits(&other.server, "/keys").await, 1);
     }
     #[tokio::test]
     async fn new_registration_applies_without_waiting_for_the_registry_ttl() {

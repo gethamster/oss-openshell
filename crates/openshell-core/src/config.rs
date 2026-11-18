@@ -487,6 +487,16 @@ pub struct OidcConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub federation_registry_url: Option<String>,
 
+    /// Where the gateway reaches the configured issuer when that is not the
+    /// issuer's public address: the identity service's own listener on this
+    /// host, as a plain HTTP origin on a numeric loopback address such as
+    /// `http://127.0.0.1:17314`. Discovery and JWKS requests for the issuer's
+    /// origin go there and name the public issuer host (`Host`,
+    /// `X-Forwarded-Host`, `X-Forwarded-Proto`). The discovery document must
+    /// still name the public issuer, and tokens are verified against it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer_transport_origin: Option<String>,
+
     /// Permit cleartext OIDC metadata and JWKS requests to numeric loopback
     /// addresses. This is a development-only escape hatch and never permits
     /// cleartext requests to hostnames or non-loopback addresses.

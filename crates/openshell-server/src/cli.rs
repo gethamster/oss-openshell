@@ -667,6 +667,10 @@ fn prepare_server_config_with_drivers(
                 .as_ref()
                 .and_then(|f| f.openshell.gateway.oidc.as_ref())
                 .and_then(|oidc| oidc.federation_registry_url.clone()),
+            issuer_transport_origin: file
+                .as_ref()
+                .and_then(|f| f.openshell.gateway.oidc.as_ref())
+                .and_then(|oidc| oidc.issuer_transport_origin.clone()),
             issuer,
             dangerously_allow_insecure_http: args.oidc_dangerously_allow_insecure_http,
             jwks_allowed_origins: args.oidc_jwks_allowed_origins.clone(),

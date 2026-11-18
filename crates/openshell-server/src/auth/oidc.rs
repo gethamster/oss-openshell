@@ -85,6 +85,8 @@ const JWKS_MAX_BYTES: usize = 1024 * 1024;
 pub struct JwksCache {
     keys: Arc<RwLock<HashMap<String, (DecodingKey, Algorithm)>>>,
     jwks_uri: String,
+    /// The issuer's own listener on this host, when one is configured.
+    transport: Option<IssuerTransport>,
     ttl: Duration,
     /// How long past `ttl` the keys stay in use while refreshes get no
     /// answer. See `UNANSWERED_KEY_LIMIT`.
@@ -227,6 +229,71 @@ fn validate_jwks_url(
     ))
 }
 
+/// The configured issuer's own listener on this host
+/// ([`OidcConfig::issuer_transport_origin`]) and the issuer origin it serves.
+#[derive(Clone)]
+struct IssuerTransport {
+    origin: url::Url,
+    issuer: url::Url,
+}
+
+impl IssuerTransport {
+    /// Reads and checks the setting. Only plain HTTP on a numeric loopback
+    /// address is a listener on this host that needs no certificate.
+    fn from_config(config: &OidcConfig, issuer: &url::Url) -> Result<Option<Self>, String> {
+        let Some(value) = &config.issuer_transport_origin else {
+            return Ok(None);
+        };
+        let invalid = |reason: &str| format!("OIDC issuer_transport_origin '{value}' {reason}");
+        let origin =
+            url::Url::parse(value).map_err(|_| invalid("must be an absolute HTTP origin"))?;
+        if origin.scheme() != "http" || !origin.host_str().is_some_and(is_numeric_loopback) {
+            return Err(invalid(
+                "must be a plain HTTP origin on a numeric loopback address",
+            ));
+        }
+        if origin.port() == Some(0)
+            || origin.path() != "/"
+            || origin.query().is_some()
+            || origin.fragment().is_some()
+            || !origin.username().is_empty()
+            || origin.password().is_some()
+        {
+            return Err(invalid(
+                "must not include a path, query, fragment, credentials, or port 0",
+            ));
+        }
+        Ok(Some(Self {
+            origin,
+            issuer: issuer.clone(),
+        }))
+    }
+}
+
+/// A GET for `url`. A URL at the issuer's origin goes to the issuer's own
+/// listener when one is configured, and names the public issuer host, so the
+/// identity service answers as the public issuer. Any other URL (a JWKS origin
+/// the operator allowed, the federation registry) is requested as it is.
+fn issuer_get(
+    client: &Client,
+    transport: Option<&IssuerTransport>,
+    url: &url::Url,
+) -> reqwest::RequestBuilder {
+    let Some(transport) = transport.filter(|transport| url.origin() == transport.issuer.origin())
+    else {
+        return client.get(url.clone());
+    };
+    let mut target = transport.origin.clone();
+    target.set_path(url.path());
+    target.set_query(url.query());
+    let host = &url[url::Position::BeforeHost..url::Position::AfterPort];
+    client
+        .get(target)
+        .header(reqwest::header::HOST, host)
+        .header("X-Forwarded-Host", host)
+        .header("X-Forwarded-Proto", url.scheme())
+}
+
 fn is_json_content_type(value: &reqwest::header::HeaderValue) -> bool {
     let Ok(value) = value.to_str() else {
         return false;
@@ -264,8 +331,17 @@ async fn fetch_bounded_json<T: serde::de::DeserializeOwned>(
     description: &str,
     max_bytes: usize,
 ) -> Result<T, FetchError> {
+    fetch_bounded_json_from(client.get(url.clone()), description, max_bytes).await
+}
+
+/// As [`fetch_bounded_json`], for a request the caller built.
+async fn fetch_bounded_json_from<T: serde::de::DeserializeOwned>(
+    request: reqwest::RequestBuilder,
+    description: &str,
+    max_bytes: usize,
+) -> Result<T, FetchError> {
     let rejected = |message: String| Err(FetchError::Rejected(message));
-    let mut response = client.get(url.clone()).send().await.map_err(|error| {
+    let mut response = request.send().await.map_err(|error| {
         FetchError::Unanswered(format!("{description} request failed: {error}"))
     })?;
 
@@ -689,9 +765,9 @@ impl JwksCache {
         .map_err(|error| format!("failed to construct OIDC discovery URL: {error}"))?;
         info!(url = %discovery_url, "Discovering OIDC configuration");
 
-        let discovery: OidcDiscovery = fetch_bounded_json(
-            &http,
-            &discovery_url,
+        let transport = IssuerTransport::from_config(config, &issuer_url)?;
+        let discovery: OidcDiscovery = fetch_bounded_json_from(
+            issuer_get(&http, transport.as_ref(), &discovery_url),
             "OIDC discovery",
             OIDC_DISCOVERY_MAX_BYTES,
         )
@@ -714,6 +790,7 @@ impl JwksCache {
         let cache = Self {
             keys: Arc::new(RwLock::new(HashMap::new())),
             jwks_uri: jwks_uri.to_string(),
+            transport,
             ttl: Duration::from_secs(config.jwks_ttl_secs),
             unanswered_limit: UNANSWERED_KEY_LIMIT,
             last_unanswered_refresh: Arc::new(RwLock::new(None)),
@@ -773,8 +850,12 @@ impl JwksCache {
         let jwks_uri = url::Url::parse(&self.jwks_uri).map_err(|error| {
             FetchError::Rejected(format!("cached JWKS URI became invalid: {error}"))
         })?;
-        let jwk_set: JwkSet =
-            fetch_bounded_json(&self.http, &jwks_uri, "JWKS", JWKS_MAX_BYTES).await?;
+        let jwk_set: JwkSet = fetch_bounded_json_from(
+            issuer_get(&self.http, self.transport.as_ref(), &jwks_uri),
+            "JWKS",
+            JWKS_MAX_BYTES,
+        )
+        .await?;
 
         let mut new_keys = HashMap::new();
         let mut poisoned_kids = HashSet::new();
@@ -1127,6 +1208,7 @@ mod tests {
     fn transport_test_config(issuer: impl Into<String>) -> OidcConfig {
         OidcConfig {
             federation_registry_url: None,
+            issuer_transport_origin: None,
             issuer: issuer.into(),
             dangerously_allow_insecure_http: false,
             jwks_allowed_origins: Vec::new(),
@@ -1649,6 +1731,7 @@ mod tests {
     pub(super) fn mock_issuer_config(server: &wiremock::MockServer) -> OidcConfig {
         OidcConfig {
             federation_registry_url: None,
+            issuer_transport_origin: None,
             issuer: server.uri(),
             dangerously_allow_insecure_http: true,
             jwks_allowed_origins: Vec::new(),
@@ -1668,6 +1751,135 @@ mod tests {
         JwksCache::new(&mock_issuer_config(server))
             .await
             .expect("cache should build from the mock issuer")
+    }
+
+    /// A public HTTPS issuer whose own listener is the mock server: the
+    /// listener answers only requests that name the public issuer host.
+    async fn public_issuer_on_loopback(
+        server: &wiremock::MockServer,
+        discovered_issuer: &str,
+    ) -> OidcConfig {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, ResponseTemplate};
+
+        const ISSUER: &str = "https://idp.example.com:8443/tenant";
+        let public = |route: &str| {
+            Mock::given(method("GET"))
+                .and(path(route))
+                .and(header("host", "idp.example.com:8443"))
+                .and(header("x-forwarded-host", "idp.example.com:8443"))
+                .and(header("x-forwarded-proto", "https"))
+        };
+        public("/tenant/.well-known/openid-configuration")
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issuer": discovered_issuer,
+                "jwks_uri": format!("{ISSUER}/jwks"),
+            })))
+            .mount(server)
+            .await;
+        public("/tenant/jwks")
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "keys": [{
+                    "kid": TEST_KID,
+                    "kty": "RSA",
+                    "n": TEST_RSA_KEY.modulus_b64,
+                    "e": TEST_RSA_KEY.exponent_b64,
+                }],
+            })))
+            .mount(server)
+            .await;
+        OidcConfig {
+            issuer: ISSUER.to_owned(),
+            issuer_transport_origin: Some(server.uri()),
+            dangerously_allow_insecure_http: false,
+            ..mock_issuer_config(server)
+        }
+    }
+
+    /// Discovery and keys are read on the issuer's own listener, under the
+    /// public issuer host. Tokens are still verified against the public issuer.
+    #[tokio::test]
+    async fn issuer_transport_origin_reads_discovery_and_keys_on_the_loopback_listener() {
+        let server = wiremock::MockServer::start().await;
+        let config =
+            public_issuer_on_loopback(&server, "https://idp.example.com:8443/tenant").await;
+        let cache = JwksCache::new(&config)
+            .await
+            .expect("the loopback listener serves the public issuer");
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+
+        let token = |issuer: &str| {
+            mint_rs256(
+                &claims_for(issuer, TEST_AUDIENCE, now_secs() + 3600),
+                TEST_KID,
+            )
+        };
+        let identity = cache
+            .validate_token(&token(&config.issuer))
+            .await
+            .expect("a token of the public issuer is accepted");
+        assert_eq!(identity.subject, "user-42");
+        // The listener's own address is not an issuer.
+        assert!(cache.validate_token(&token(&server.uri())).await.is_err());
+    }
+
+    /// The listener must answer as the public issuer: another issuer in its
+    /// discovery document is refused, as it is at the public address.
+    #[tokio::test]
+    async fn issuer_transport_origin_keeps_the_discovery_issuer_check() {
+        let server = wiremock::MockServer::start().await;
+        let config = public_issuer_on_loopback(&server, &server.uri()).await;
+        let error = JwksCache::new(&config)
+            .await
+            .expect_err("the listener names another issuer");
+        assert!(error.contains("issuer mismatch"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn issuer_transport_origin_must_be_plain_http_on_numeric_loopback() {
+        for origin in [
+            "https://127.0.0.1:17314",
+            "http://localhost:17314",
+            "http://192.0.2.1:17314",
+            "http://127.0.0.1:17314/path",
+            "http://127.0.0.1:17314?x=1",
+            "http://user@127.0.0.1:17314",
+            "http://127.0.0.1:0",
+            "not a url",
+        ] {
+            let mut config = transport_test_config("https://idp.example.com/tenant");
+            config.issuer_transport_origin = Some(origin.to_owned());
+            let error = JwksCache::new(&config)
+                .await
+                .expect_err("the origin must be refused before any request");
+            assert!(
+                error.contains("issuer_transport_origin"),
+                "{origin}: {error}"
+            );
+        }
+    }
+
+    /// Only a URL at the issuer's origin goes to the issuer's listener. A JWKS
+    /// origin the operator allowed keeps its own address and headers.
+    #[test]
+    fn issuer_transport_origin_serves_only_the_issuer_origin() {
+        let issuer = url::Url::parse("https://idp.example.com/tenant").unwrap();
+        let mut config = transport_test_config(issuer.as_str());
+        config.issuer_transport_origin = Some("http://127.0.0.1:17314".to_owned());
+        let transport = IssuerTransport::from_config(&config, &issuer).unwrap();
+        let client = Client::new();
+        let request = |url: &str| {
+            issuer_get(&client, transport.as_ref(), &url::Url::parse(url).unwrap())
+                .build()
+                .unwrap()
+        };
+        let own = request("https://idp.example.com/tenant/jwks?v=1");
+        assert_eq!(own.url().as_str(), "http://127.0.0.1:17314/tenant/jwks?v=1");
+        assert_eq!(own.headers()["host"], "idp.example.com");
+        let other = request("https://keys.example.com/jwks");
+        assert_eq!(other.url().as_str(), "https://keys.example.com/jwks");
+        assert!(other.headers().get("host").is_none());
+        assert!(other.headers().get("x-forwarded-host").is_none());
     }
 
     #[tokio::test]
@@ -2057,6 +2269,7 @@ mod tests {
         fn test_oidc_config(issuer: &str) -> OidcConfig {
             OidcConfig {
                 federation_registry_url: None,
+                issuer_transport_origin: None,
                 issuer: issuer.to_string(),
                 dangerously_allow_insecure_http: true,
                 jwks_allowed_origins: Vec::new(),
