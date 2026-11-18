@@ -76,8 +76,10 @@ fn key_set(kids: &[&str]) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(serde_json::json!({ "keys": keys }))
 }
 
+/// Undecided, and reported with the status a caller repeats a request for.
 fn unavailable(rejection: &AuthRejection) -> bool {
     rejection.reason == AuthFailureReason::IdentityProviderUnavailable
+        && rejection.status.code() == tonic::Code::Unavailable
 }
 
 #[tokio::test]

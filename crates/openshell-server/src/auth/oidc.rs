@@ -962,7 +962,7 @@ impl JwksCache {
             warn!(error = %e, "JWKS refresh failed");
             reject(
                 AuthFailureReason::IdentityProviderUnavailable,
-                Status::internal("OIDC key refresh failed"),
+                Status::unavailable("OIDC key refresh failed"),
             )
         })?;
 
@@ -991,7 +991,7 @@ impl JwksCache {
                 warn!(error = %e, "JWKS refresh on kid miss failed");
                 reject(
                     AuthFailureReason::IdentityProviderUnavailable,
-                    Status::internal("OIDC key refresh failed"),
+                    Status::unavailable("OIDC key refresh failed"),
                 )
             })?;
             keys_guard = self.keys.read().await;
@@ -1863,7 +1863,7 @@ mod tests {
             rejection.reason,
             AuthFailureReason::IdentityProviderUnavailable
         );
-        assert_eq!(rejection.status.code(), tonic::Code::Internal);
+        assert_eq!(rejection.status.code(), tonic::Code::Unavailable);
     }
 
     mod jwks_validation {
