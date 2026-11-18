@@ -459,6 +459,15 @@ and scopes cannot expand it. Grant resource access through workspace membership.
 Operator certificate authentication remains separate. Registry removals apply
 on the next refresh, within 30 seconds. After that window, an unavailable or
 invalid registry rejects authentication instead of retaining stale authority.
+The gateway also reads the registry again when a token names an issuer or
+subject that its copy does not admit, so a new registration applies at once.
+
+All connections share one copy of the registry and one key cache for each
+registered issuer. The gateway discovers a registered issuer once, at the first
+token it verifies for that issuer, and keeps the discovered JWKS URL until it
+restarts or the registry stops listing the issuer. It refreshes the issuer's
+keys every 30 seconds, and follows the same rules as the configured issuer when
+a refresh gets no answer.
 
 Set `[openshell.gateway.mtls_auth] enabled = true` to map a verified client certificate to a CLI user identity. This gateway policy is independent of the compute driver and defaults on when a client CA is configured without OIDC. The listener allows bearer-only clients and validates any client certificate presented against the configured CA. Supervisors use `guest_tls_ca` to authenticate the gateway and sandbox bearer tokens to authenticate their RPCs.
 

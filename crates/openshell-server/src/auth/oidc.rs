@@ -24,6 +24,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tonic::Status;
@@ -59,6 +60,18 @@ const STALE_KEY_GRACE_MULTIPLIER: u32 = 3;
 /// against the issuer's JWKS endpoint.
 const KID_MISS_REFRESH_COOLDOWN: Duration = Duration::from_secs(1);
 
+/// How long past the TTL cached keys stay in use while the issuer gives no
+/// answer to a refresh, counted from the last refresh that loaded a usable
+/// key. A signing key the issuer withdrew stays trusted for at most this
+/// long, and only while the issuer cannot be asked; a token's own expiry
+/// still applies. The limit starts at the end of the TTL because the TTL is
+/// configurable and can be longer than the limit.
+const UNANSWERED_KEY_LIMIT: Duration = Duration::from_mins(10);
+
+/// How long the issuer is left alone after a refresh that got no answer,
+/// while cached keys still decide requests. Never longer than the TTL.
+const UNANSWERED_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+
 /// OIDC metadata is small. These limits bound memory consumption before JSON
 /// deserialization while leaving ample room for large enterprise key sets.
 const OIDC_DISCOVERY_MAX_BYTES: usize = 64 * 1024;
@@ -73,7 +86,18 @@ pub struct JwksCache {
     keys: Arc<RwLock<HashMap<String, (DecodingKey, Algorithm)>>>,
     jwks_uri: String,
     ttl: Duration,
+    /// How long past `ttl` the keys stay in use while refreshes get no
+    /// answer. See `UNANSWERED_KEY_LIMIT`.
+    unanswered_limit: Duration,
+    /// Timestamp of the last refresh that loaded a JWKS, usable keys or not.
     last_refresh: Arc<RwLock<Instant>>,
+    /// When the latest refresh got no answer from the issuer. Any refresh
+    /// the issuer answers clears it.
+    last_unanswered_refresh: Arc<RwLock<Option<Instant>>>,
+    /// Whether the issuer has refused a refresh since it last served a JWKS.
+    /// Keys past their TTL then decide nothing until it serves one again,
+    /// even if a later refresh gets no answer.
+    refresh_refused: AtomicBool,
     /// Timestamp of the last refresh that yielded at least one usable key.
     /// Bounds how long a fully-empty or fully-unusable JWKS response can
     /// keep serving stale cached keys before they're evicted.
@@ -86,6 +110,10 @@ pub struct JwksCache {
     refresh_mutex: tokio::sync::Mutex<()>,
     http: Client,
     config: OidcConfig,
+    /// Registry-backed issuer federation, when configured. It lives in the
+    /// cache the gateway builds once at startup, so every connection shares
+    /// one copy of the registry and one key cache for each registered issuer.
+    federation: Option<federation::Federation>,
 }
 
 impl std::fmt::Debug for JwksCache {
@@ -211,20 +239,44 @@ fn is_json_content_type(value: &reqwest::header::HeaderValue) -> bool {
             .is_some_and(|subtype| subtype.ends_with("+json"))
 }
 
+/// Why a discovery, JWKS or registry fetch produced nothing usable.
+#[derive(Debug)]
+enum FetchError {
+    /// The source decided nothing: the request got no reply, the reply broke
+    /// off, or a server on the way answered 5xx. What the source last
+    /// published still stands.
+    Unanswered(String),
+    /// The source answered, and the answer refuses the request or is not
+    /// usable.
+    Rejected(String),
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (Self::Unanswered(message) | Self::Rejected(message)) = self;
+        f.write_str(message)
+    }
+}
+
 async fn fetch_bounded_json<T: serde::de::DeserializeOwned>(
     client: &Client,
     url: &url::Url,
     description: &str,
     max_bytes: usize,
-) -> Result<T, String> {
-    let mut response = client
-        .get(url.clone())
-        .send()
-        .await
-        .map_err(|error| format!("{description} request failed: {error}"))?;
+) -> Result<T, FetchError> {
+    let rejected = |message: String| Err(FetchError::Rejected(message));
+    let mut response = client.get(url.clone()).send().await.map_err(|error| {
+        FetchError::Unanswered(format!("{description} request failed: {error}"))
+    })?;
 
+    if response.status().is_server_error() {
+        return Err(FetchError::Unanswered(format!(
+            "{description} request returned HTTP {}",
+            response.status()
+        )));
+    }
     if !response.status().is_success() {
-        return Err(format!(
+        return rejected(format!(
             "{description} request returned HTTP {}",
             response.status()
         ));
@@ -234,7 +286,7 @@ async fn fetch_bounded_json<T: serde::de::DeserializeOwned>(
         .get(reqwest::header::CONTENT_TYPE)
         .is_some_and(is_json_content_type)
     {
-        return Err(format!(
+        return rejected(format!(
             "{description} response must use an application/json or application/*+json content type"
         ));
     }
@@ -242,7 +294,7 @@ async fn fetch_bounded_json<T: serde::de::DeserializeOwned>(
         .content_length()
         .is_some_and(|length| length > max_bytes as u64)
     {
-        return Err(format!(
+        return rejected(format!(
             "{description} response exceeds the {max_bytes}-byte limit"
         ));
     }
@@ -253,25 +305,23 @@ async fn fetch_bounded_json<T: serde::de::DeserializeOwned>(
         .unwrap_or_default()
         .min(max_bytes);
     let mut body = Vec::with_capacity(initial_capacity);
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| format!("{description} response body failed: {error}"))?
-    {
-        let next_length = body
-            .len()
-            .checked_add(chunk.len())
-            .ok_or_else(|| format!("{description} response length overflow"))?;
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        FetchError::Unanswered(format!("{description} response body failed: {error}"))
+    })? {
+        let next_length = body.len().checked_add(chunk.len()).ok_or_else(|| {
+            FetchError::Rejected(format!("{description} response length overflow"))
+        })?;
         if next_length > max_bytes {
-            return Err(format!(
+            return rejected(format!(
                 "{description} response exceeds the {max_bytes}-byte limit"
             ));
         }
         body.extend_from_slice(&chunk);
     }
 
-    serde_json::from_slice(&body)
-        .map_err(|error| format!("{description} response parse failed: {error}"))
+    serde_json::from_slice(&body).map_err(|error| {
+        FetchError::Rejected(format!("{description} response parse failed: {error}"))
+    })
 }
 
 /// JWKS key set.
@@ -645,7 +695,8 @@ impl JwksCache {
             "OIDC discovery",
             OIDC_DISCOVERY_MAX_BYTES,
         )
-        .await?;
+        .await
+        .map_err(|error| error.to_string())?;
 
         // Validate the discovery document's issuer matches our configured issuer.
         let expected = config.issuer.trim_end_matches('/');
@@ -664,15 +715,18 @@ impl JwksCache {
             keys: Arc::new(RwLock::new(HashMap::new())),
             jwks_uri: jwks_uri.to_string(),
             ttl: Duration::from_secs(config.jwks_ttl_secs),
+            unanswered_limit: UNANSWERED_KEY_LIMIT,
+            last_unanswered_refresh: Arc::new(RwLock::new(None)),
+            refresh_refused: AtomicBool::new(false),
             last_refresh: Arc::new(RwLock::new(
                 Instant::now()
                     .checked_sub(Duration::from_secs(config.jwks_ttl_secs + 1))
                     .unwrap_or_else(Instant::now),
             )),
-            // Placeholder value: the grace-period check is only reachable
-            // once `self.keys` has been non-empty, at which point this
-            // field always holds a freshly-stamped real value instead (see
-            // `refresh_keys`), so the value here is never actually read.
+            // Placeholder value: it only matters once `self.keys` has been
+            // non-empty, at which point this field holds a freshly-stamped
+            // real value instead (see `load_keys`). Until then there is no
+            // key for the grace period or the unanswered limit to keep.
             last_nonempty_refresh: Arc::new(RwLock::new(Instant::now())),
             // Backdated beyond the cooldown so the very first kid-miss
             // refresh is never throttled.
@@ -682,20 +736,43 @@ impl JwksCache {
                     .unwrap_or_else(Instant::now),
             )),
             refresh_mutex: tokio::sync::Mutex::new(()),
+            federation: config
+                .federation_registry_url
+                .as_ref()
+                .map(|_| federation::Federation::new(config.clone(), http.clone())),
             http,
             config: config.clone(),
         };
 
-        cache.refresh_keys().await?;
+        cache
+            .refresh_keys()
+            .await
+            .map_err(|error| error.to_string())?;
         Ok(cache)
     }
 
+    /// Ask the issuer for its keys, and record how it answered.
+    async fn refresh_keys(&self) -> Result<(), FetchError> {
+        let result = self.load_keys().await;
+        *self.last_unanswered_refresh.write().await = match &result {
+            Err(FetchError::Unanswered(_)) => Some(Instant::now()),
+            Ok(()) | Err(FetchError::Rejected(_)) => None,
+        };
+        match &result {
+            Ok(()) => self.refresh_refused.store(false, Ordering::Relaxed),
+            Err(FetchError::Rejected(_)) => self.refresh_refused.store(true, Ordering::Relaxed),
+            Err(FetchError::Unanswered(_)) => {}
+        }
+        result
+    }
+
     /// Fetch the JWKS and update the cached keys.
-    async fn refresh_keys(&self) -> Result<(), String> {
+    async fn load_keys(&self) -> Result<(), FetchError> {
         debug!(uri = %self.jwks_uri, "Refreshing JWKS keys");
 
-        let jwks_uri = url::Url::parse(&self.jwks_uri)
-            .map_err(|error| format!("cached JWKS URI became invalid: {error}"))?;
+        let jwks_uri = url::Url::parse(&self.jwks_uri).map_err(|error| {
+            FetchError::Rejected(format!("cached JWKS URI became invalid: {error}"))
+        })?;
         let jwk_set: JwkSet =
             fetch_bounded_json(&self.http, &jwks_uri, "JWKS", JWKS_MAX_BYTES).await?;
 
@@ -774,23 +851,78 @@ impl JwksCache {
         Ok(())
     }
 
+    /// Whether the cached keys can still decide a request while the issuer
+    /// gives no answer: it has not refused a refresh since it last served a
+    /// JWKS, and it last served a usable key within the unanswered limit.
+    async fn usable_unanswered(&self) -> bool {
+        let age = self.last_nonempty_refresh.read().await.elapsed();
+        !self.refresh_refused.load(Ordering::Relaxed)
+            && age <= self.ttl.saturating_add(self.unanswered_limit)
+    }
+
+    /// How long the issuer is left alone after a refresh that got no answer.
+    fn unanswered_retry_interval(&self) -> Duration {
+        self.ttl.min(UNANSWERED_RETRY_INTERVAL)
+    }
+
+    /// Whether the issuer must be asked for its keys before the next
+    /// request is decided.
+    async fn refresh_due(&self) -> bool {
+        if self.last_refresh.read().await.elapsed() <= self.ttl {
+            return false;
+        }
+        // The latest refresh got no answer: leave the issuer alone for a
+        // while, as long as the cached keys can still be used.
+        let retry_interval = self.unanswered_retry_interval();
+        let waiting = self
+            .last_unanswered_refresh
+            .read()
+            .await
+            .is_some_and(|at| at.elapsed() < retry_interval);
+        !(waiting && self.usable_unanswered().await)
+    }
+
     /// Refresh keys if the TTL has elapsed.
     ///
-    /// Holds the refresh mutex so concurrent callers coalesce into a single
-    /// HTTP fetch. The second caller will re-check the TTL after acquiring
-    /// the lock and find it fresh.
-    async fn refresh_if_stale(&self) -> Result<(), String> {
-        let last = *self.last_refresh.read().await;
-        if last.elapsed() <= self.ttl {
+    /// Only one caller asks the issuer at a time. A caller that finds a
+    /// refresh in flight decides from the cached keys while they are usable
+    /// without an answer, and otherwise waits for that refresh.
+    ///
+    /// A refresh that gets no answer is not a failure while the cached keys
+    /// are usable without one: the issuer decided nothing, so what it last
+    /// published still stands. A refresh the issuer refuses is a failure,
+    /// and stays one until the issuer serves a JWKS again.
+    async fn refresh_if_stale(&self) -> Result<(), FetchError> {
+        if !self.refresh_due().await {
             return Ok(());
         }
-        let _guard = self.refresh_mutex.lock().await;
+        let _guard = if let Ok(guard) = self.refresh_mutex.try_lock() {
+            guard
+        } else {
+            if self.usable_unanswered().await {
+                return Ok(());
+            }
+            self.refresh_mutex.lock().await
+        };
         // Re-check after acquiring the lock — another task may have refreshed.
-        let last = *self.last_refresh.read().await;
-        if last.elapsed() <= self.ttl {
+        if !self.refresh_due().await {
             return Ok(());
         }
-        self.refresh_keys().await
+        match self.refresh_keys().await {
+            Err(FetchError::Unanswered(error)) => {
+                if !self.usable_unanswered().await {
+                    return Err(FetchError::Unanswered(error));
+                }
+                let age = self.last_nonempty_refresh.read().await.elapsed();
+                warn!(
+                    error = %error,
+                    age_secs = age.as_secs(),
+                    "JWKS refresh got no answer; verifying with cached keys"
+                );
+                Ok(())
+            }
+            result => result,
+        }
     }
 
     /// Refresh keys on a kid-miss lookup, coalescing concurrent callers and
@@ -800,11 +932,20 @@ impl JwksCache {
     /// `kid` could force a fresh HTTP fetch on every single request. Only
     /// the first kid-miss refresh within `KID_MISS_REFRESH_COOLDOWN` does
     /// real work; the rest reuse its result.
-    async fn refresh_keys_coalesced(&self) -> Result<(), String> {
+    async fn refresh_keys_coalesced(&self) -> Result<(), FetchError> {
         let _guard = self.refresh_mutex.lock().await;
         let last = *self.last_kid_miss_refresh.read().await;
         if last.elapsed() < KID_MISS_REFRESH_COOLDOWN {
-            return Ok(());
+            // Reusing the result includes a refresh that got no answer: an
+            // unknown `kid` is then still undecided, not refused.
+            let unanswered = self.last_unanswered_refresh.read().await.is_some();
+            return if unanswered {
+                Err(FetchError::Unanswered(
+                    "the issuer gave no answer to the latest JWKS refresh".to_string(),
+                ))
+            } else {
+                Ok(())
+            };
         }
         *self.last_kid_miss_refresh.write().await = Instant::now();
         self.refresh_keys().await
@@ -939,19 +1080,17 @@ fn decode_failure_reason(kind: &jsonwebtoken::errors::ErrorKind) -> AuthFailureR
 /// Returns `NotApplicable` when no Bearer header is present, so the chain can fall
 /// through to other authenticators (e.g. the gateway-minted sandbox JWT
 /// authenticator).
+///
+/// The gateway builds one for each accepted connection, so it holds no state
+/// of its own: the registry copy and every key cache live in the shared
+/// [`JwksCache`].
 pub struct OidcAuthenticator {
     cache: Arc<JwksCache>,
-    federation: Option<federation::Federation>,
 }
 
 impl OidcAuthenticator {
     pub fn new(cache: Arc<JwksCache>) -> Self {
-        let federation = cache
-            .config
-            .federation_registry_url
-            .as_ref()
-            .map(|_| federation::Federation::new(cache.clone()));
-        Self { cache, federation }
+        Self { cache }
     }
 }
 
@@ -966,7 +1105,7 @@ impl Authenticator for OidcAuthenticator {
             return Ok(Authentication::NotApplicable);
         };
 
-        let identity = if let Some(federation) = &self.federation {
+        let identity = if let Some(federation) = &self.cache.federation {
             federation.authenticate(token).await?
         } else {
             self.cache.validate_token(token).await?
@@ -976,6 +1115,10 @@ impl Authenticator for OidcAuthenticator {
         })))
     }
 }
+
+#[cfg(test)]
+#[path = "oidc_refresh_tests.rs"]
+mod refresh_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1404,18 +1547,18 @@ mod tests {
     // the test suite.
     // -----------------------------------------------------------------------
 
-    const TEST_KID: &str = "test-signing-key";
-    const TEST_AUDIENCE: &str = "openshell-cli";
+    pub(super) const TEST_KID: &str = "test-signing-key";
+    pub(super) const TEST_AUDIENCE: &str = "openshell-cli";
 
     /// One RSA key per test binary. Key generation dominates the runtime of
     /// these tests and the key carries no meaning beyond being valid.
-    static TEST_RSA_KEY: std::sync::LazyLock<TestRsaKey> =
+    pub(super) static TEST_RSA_KEY: std::sync::LazyLock<TestRsaKey> =
         std::sync::LazyLock::new(TestRsaKey::generate);
 
-    struct TestRsaKey {
+    pub(super) struct TestRsaKey {
         private_pem: String,
-        modulus_b64: String,
-        exponent_b64: String,
+        pub(super) modulus_b64: String,
+        pub(super) exponent_b64: String,
     }
 
     impl TestRsaKey {
@@ -1438,7 +1581,7 @@ mod tests {
         }
     }
 
-    fn now_secs() -> i64 {
+    pub(super) fn now_secs() -> i64 {
         i64::try_from(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1449,7 +1592,7 @@ mod tests {
     }
 
     /// Sign `claims` with the test key, tagging the header with `kid`.
-    fn mint_rs256(claims: &serde_json::Value, kid: &str) -> String {
+    pub(super) fn mint_rs256(claims: &serde_json::Value, kid: &str) -> String {
         crate::install_jsonwebtoken_crypto_provider();
 
         let mut header = jsonwebtoken::Header::new(Algorithm::RS256);
@@ -1459,7 +1602,7 @@ mod tests {
         openshell_crypto::jwt::encode(&header, claims, &key).expect("sign RS256 token")
     }
 
-    fn claims_for(issuer: &str, audience: &str, exp: i64) -> serde_json::Value {
+    pub(super) fn claims_for(issuer: &str, audience: &str, exp: i64) -> serde_json::Value {
         serde_json::json!({
             "sub": "user-42",
             "preferred_username": "ada",
@@ -1471,9 +1614,8 @@ mod tests {
         })
     }
 
-    /// Serve an OIDC discovery document and a JWKS carrying the test key, then
-    /// build a cache against them the same way production does.
-    async fn cache_with_mock_issuer(server: &wiremock::MockServer) -> JwksCache {
+    /// Serve an OIDC discovery document and a JWKS carrying the test key.
+    pub(super) async fn mount_mock_issuer(server: &wiremock::MockServer) {
         use wiremock::matchers::{header, method, path};
         use wiremock::{Mock, ResponseTemplate};
 
@@ -1502,10 +1644,12 @@ mod tests {
             })))
             .mount(server)
             .await;
+    }
 
-        JwksCache::new(&OidcConfig {
+    pub(super) fn mock_issuer_config(server: &wiremock::MockServer) -> OidcConfig {
+        OidcConfig {
             federation_registry_url: None,
-            issuer,
+            issuer: server.uri(),
             dangerously_allow_insecure_http: true,
             jwks_allowed_origins: Vec::new(),
             audience: TEST_AUDIENCE.to_owned(),
@@ -1514,9 +1658,16 @@ mod tests {
             admin_role: "openshell-admin".to_owned(),
             user_role: "openshell-user".to_owned(),
             scopes_claim: "scope".to_owned(),
-        })
-        .await
-        .expect("cache should build from the mock issuer")
+        }
+    }
+
+    /// Serve the mock issuer, then build a cache against it the same way
+    /// production does.
+    pub(super) async fn cache_with_mock_issuer(server: &wiremock::MockServer) -> JwksCache {
+        mount_mock_issuer(server).await;
+        JwksCache::new(&mock_issuer_config(server))
+            .await
+            .expect("cache should build from the mock issuer")
     }
 
     #[tokio::test]
