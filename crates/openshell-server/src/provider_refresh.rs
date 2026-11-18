@@ -508,6 +508,8 @@ struct RefreshFailure {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RefreshRetrySchedule {
     Short,
+    /// Doubles from the short retry while the same unexplained failure repeats.
+    Backoff,
     Configuration,
     Parked,
 }
@@ -529,7 +531,7 @@ impl RefreshFailure {
             recovery_action: ProviderCredentialRefreshRecoveryAction::Investigate,
             failure_code,
             provider_error_subtype: None,
-            retry_schedule: RefreshRetrySchedule::Short,
+            retry_schedule: RefreshRetrySchedule::Backoff,
         }
     }
 
@@ -790,6 +792,13 @@ async fn persist_refresh_failure_state(
     failure: &RefreshFailure,
 ) -> Result<u64, Status> {
     let now_ms = current_time_ms();
+    let repeated_wait_ms = (state.recovery_action == failure.recovery_action as i32
+        && state.failure_code == failure.failure_code)
+        .then(|| {
+            state
+                .next_refresh_at_ms
+                .saturating_sub(state.last_error_at_ms)
+        });
     state.status = match failure.recovery_action {
         ProviderCredentialRefreshRecoveryAction::Retry
         | ProviderCredentialRefreshRecoveryAction::Unspecified => "error",
@@ -810,6 +819,7 @@ async fn persist_refresh_failure_state(
         RefreshRetrySchedule::Short => {
             now_ms.saturating_add(REFRESH_ERROR_RETRY_SECONDS.saturating_mul(1000))
         }
+        RefreshRetrySchedule::Backoff => now_ms.saturating_add(backoff_retry_ms(repeated_wait_ms)),
         RefreshRetrySchedule::Configuration => {
             now_ms.saturating_add(REFRESH_CONFIGURATION_RETRY_SECONDS.saturating_mul(1000))
         }
@@ -2007,6 +2017,19 @@ async fn request_token(
     })
 }
 
+/// The wait before retrying an unexplained failure: the short retry the first
+/// time, then double the previous wait while the same failure repeats, up to the
+/// configuration retry. A token endpoint that answers 404 for a suspended tenant
+/// otherwise costs a request every minute until someone acts.
+fn backoff_retry_ms(repeated_wait_ms: Option<i64>) -> i64 {
+    let first = REFRESH_ERROR_RETRY_SECONDS.saturating_mul(1000);
+    let ceiling = REFRESH_CONFIGURATION_RETRY_SECONDS.saturating_mul(1000);
+    repeated_wait_ms
+        .filter(|wait| *wait >= first)
+        .map_or(first, |wait| wait.saturating_mul(2))
+        .min(ceiling)
+}
+
 async fn read_bounded_oauth_error_body(mut response: reqwest::Response) -> Vec<u8> {
     let mut body = Vec::new();
     while body.len() < MAX_OAUTH_ERROR_RESPONSE_BYTES {
@@ -2589,6 +2612,16 @@ mod tests {
     }
 
     #[test]
+    fn repeated_unexplained_failures_back_off_to_the_configuration_retry() {
+        assert_eq!(super::backoff_retry_ms(None), 60_000);
+        assert_eq!(super::backoff_retry_ms(Some(60_000)), 120_000);
+        assert_eq!(super::backoff_retry_ms(Some(1_920_000)), 3_600_000);
+        assert_eq!(super::backoff_retry_ms(Some(i64::MAX)), 3_600_000);
+        // A wait shorter than the first retry (clock skew, older state) restarts.
+        assert_eq!(super::backoff_retry_ms(Some(-5)), 60_000);
+    }
+
+    #[test]
     fn refresh_log_helpers_format_safe_operational_fields() {
         assert_eq!(seconds_until_ms(1_000, 61_000), 60);
         assert_eq!(seconds_until_ms(61_000, 1_000), 0);
@@ -2667,7 +2700,7 @@ mod tests {
             investigate.recovery_action,
             ProviderCredentialRefreshRecoveryAction::Investigate
         );
-        assert_eq!(investigate.retry_schedule, RefreshRetrySchedule::Short);
+        assert_eq!(investigate.retry_schedule, RefreshRetrySchedule::Backoff);
     }
 
     #[test]
@@ -2867,7 +2900,7 @@ mod tests {
             ProviderCredentialRefreshRecoveryAction::Investigate
         );
         assert_eq!(failure.failure_code, "oauth_unrecognized_error");
-        assert_eq!(failure.retry_schedule, RefreshRetrySchedule::Short);
+        assert_eq!(failure.retry_schedule, RefreshRetrySchedule::Backoff);
         assert!(!failure.status.message().contains("vendor_secret_error"));
         assert!(!failure.status.message().contains("do not expose me"));
     }
