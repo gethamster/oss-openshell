@@ -195,6 +195,12 @@ struct RunArgs {
     #[arg(long, env = "OPENSHELL_OIDC_ISSUER")]
     oidc_issuer: Option<String>,
 
+    /// The identity service's own listener on this host, as a plain HTTP
+    /// origin on a numeric loopback address. Discovery and JWKS requests for
+    /// the issuer's origin go there and name the public issuer host.
+    #[arg(long, env = "OPENSHELL_OIDC_ISSUER_TRANSPORT_ORIGIN")]
+    oidc_issuer_transport_origin: Option<String>,
+
     /// Development only: permit OIDC metadata and JWKS over HTTP when the
     /// endpoint uses a numeric loopback address.
     #[arg(
@@ -667,10 +673,11 @@ fn prepare_server_config_with_drivers(
                 .as_ref()
                 .and_then(|f| f.openshell.gateway.oidc.as_ref())
                 .and_then(|oidc| oidc.federation_registry_url.clone()),
-            issuer_transport_origin: file
-                .as_ref()
-                .and_then(|f| f.openshell.gateway.oidc.as_ref())
-                .and_then(|oidc| oidc.issuer_transport_origin.clone()),
+            // An empty value is an unset one, so a deployment can clear it.
+            issuer_transport_origin: args
+                .oidc_issuer_transport_origin
+                .clone()
+                .filter(|origin| !origin.is_empty()),
             issuer,
             dangerously_allow_insecure_http: args.oidc_dangerously_allow_insecure_http,
             jwks_allowed_origins: args.oidc_jwks_allowed_origins.clone(),
@@ -1437,6 +1444,12 @@ fn merge_file_into_args(args: &mut RunArgs, file: &GatewayFileSection, matches: 
     if let Some(oidc) = &file.oidc {
         if args.oidc_issuer.is_none() && arg_defaulted(matches, "oidc_issuer") {
             args.oidc_issuer = Some(oidc.issuer.clone());
+        }
+        if args.oidc_issuer_transport_origin.is_none()
+            && arg_defaulted(matches, "oidc_issuer_transport_origin")
+        {
+            args.oidc_issuer_transport_origin
+                .clone_from(&oidc.issuer_transport_origin);
         }
         if arg_defaulted(matches, "oidc_dangerously_allow_insecure_http") {
             args.oidc_dangerously_allow_insecure_http = oidc.dangerously_allow_insecure_http;
@@ -3789,6 +3802,37 @@ jwks_allowed_origins = ["https://keys.example.com"]
                     ["https://keys.example.com".to_string()]
                 );
             });
+    }
+
+    /// A deployment names the issuer's own listener in the environment; the
+    /// configuration file is the default. An earlier gateway ignores the
+    /// variable, where it would refuse the same setting as a file key.
+    #[test]
+    fn oidc_issuer_transport_origin_comes_from_the_environment_or_the_file() {
+        const FILE: &str = r#"
+[openshell.gateway.oidc]
+issuer = "https://idp.example.com"
+audience = "openshell-cli"
+issuer_transport_origin = "http://127.0.0.1:17314"
+"#;
+        let resolved = || {
+            let (mut args, matches) =
+                parse_with_args(&["openshell-gateway", "--db-url", "sqlite::memory:"]);
+            let file = config_file_from_toml(FILE);
+            merge_file_into_args(&mut args, &file.openshell.gateway, &matches);
+            args.oidc_issuer_transport_origin
+        };
+        Environment::new()
+            .remove("OPENSHELL_OIDC_ISSUER")
+            .remove("OPENSHELL_OIDC_ISSUER_TRANSPORT_ORIGIN")
+            .run(|| assert_eq!(resolved().as_deref(), Some("http://127.0.0.1:17314")));
+        Environment::new()
+            .remove("OPENSHELL_OIDC_ISSUER")
+            .set(
+                "OPENSHELL_OIDC_ISSUER_TRANSPORT_ORIGIN",
+                "http://127.0.0.1:18000",
+            )
+            .run(|| assert_eq!(resolved().as_deref(), Some("http://127.0.0.1:18000")));
     }
 
     #[test]

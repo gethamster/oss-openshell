@@ -437,6 +437,8 @@ issuer's origin go there with the public issuer host in `Host`,
 name the public issuer, and tokens are verified against it. A JWKS origin from
 `jwks_allowed_origins` and any other federated issuer keep their own addresses.
 This setting does not need `dangerously_allow_insecure_http`.
+The flag `--oidc-issuer-transport-origin` and the environment variable
+`OPENSHELL_OIDC_ISSUER_TRANSPORT_ORIGIN` set the same value and win over the file.
 
 ### Federated OIDC issuers
 
