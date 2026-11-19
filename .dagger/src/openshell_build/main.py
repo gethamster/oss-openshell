@@ -27,11 +27,12 @@ class OpenshellBuild:
                 .with_directory('/lib', runtime.directory('/lib')))
         if platform == 'linux/amd64':
             base = base.with_directory('/lib64', runtime.directory('/lib64'))
-        # QEMU cannot install guest seccomp filters. The enrolled Kata worker
-        # supplies the isolation boundary for this ARM64 build environment.
-        nix_config = 'experimental-features = nix-command flakes\nsandbox = false\n'
-        if platform == 'linux/arm64':
-            nix_config += 'filter-syscalls = false\n'
+        # Nix builds the development shell and its wrappers locally when the
+        # store cache does not hold them, and loads a syscall filter to do so.
+        # A managed build worker does not let a guest install one ("unable to
+        # load seccomp BPF program"), on either architecture; the worker
+        # supplies the isolation boundary for the build environment.
+        nix_config = 'experimental-features = nix-command flakes\nsandbox = false\nfilter-syscalls = false\n'
         return (base.with_mounted_cache('/nix', dag.cache_volume('openshell-nix-' + platform),
                                         source=base.directory('/nix'))
                 .with_mounted_cache('/cargo', dag.cache_volume('openshell-cargo'))
